@@ -7,6 +7,7 @@ struct DraftScript: ParsableCommand {
         commandName: "draftscript",
         abstract: "Interact with the Drafts app from the command line.",
         subcommands: [
+            InteractiveREPL.self,
             Create.self,
             List.self,
             Get.self,
@@ -17,6 +18,7 @@ struct DraftScript: ParsableCommand {
             SetTag.self,
             FlagDraft.self,
             Folder.self,
-        ]
+        ],
+        defaultSubcommand: InteractiveREPL.self
     )
 }

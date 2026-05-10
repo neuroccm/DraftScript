@@ -1,23 +1,25 @@
 # draftscript
 
-A CLI tool to interact with the [Drafts](https://getdrafts.com) macOS app from the terminal. Uses AppleScript for full read/write access to your draft library. Optionally integrates with [Ollama](https://ollama.com) + **Gemma 4** for AI-powered semantic search.
+An interactive CLI tool to manage your [Drafts](https://getdrafts.com) macOS app drafts from the terminal. Use it as a one-shot command or drop into interactive REPL mode with arrow-key navigation, tab completion, and AI-powered semantic search via [Ollama](https://ollama.com).
 
 ## Features
 
-- **Create** drafts from arguments or piped stdin
+- **Interactive REPL** — full terminal UI with history, tab completion, and list navigation
+- **Compose mode** — write or paste multi-line drafts, end with `/end` to save
+- **Create** drafts from arguments, piped stdin, or compose mode
 - **List** drafts with filters (folder, flagged, text search)
 - **Get** a draft's full content by UUID
-- **Show** the current draft in the editor
-- **Search** drafts by text content
-- **AISearch** — semantic search via a local LLM
+- **Search** drafts by text content with selectable results
+- **AISearch** — semantic search via a local LLM, browse results with arrow keys
 - **Run** any Drafts action on a draft
 - **Set tags**, toggle flags, move between folders
+- **View mode** — scroll through full draft content, Esc back to results
 
 ## Requirements
 
 - macOS (Apple Silicon or Intel)
 - [Drafts](https://getdrafts.com) app installed (Mac App Store)
-- Swift 5.9+ (for building from source, included with Xcode or Command Line Tools)
+- Swift 5.9+ (included with Xcode or Command Line Tools)
 - [Ollama](https://ollama.com) (optional, for `aisearch`)
 
 ## Installation
@@ -48,20 +50,90 @@ Before `draftscript` can communicate with Drafts, grant AppleScript permission:
 ## Quick Start
 
 ```bash
+# Launch the interactive REPL
+draftscript
+
+# Or use one-shot commands directly
 draftscript create "Buy groceries"
-
 draftscript list --limit 10
-
 draftscript search "meeting notes"
-
 draftscript current
 ```
 
-## Command Reference
+## Interactive REPL
+
+Running `draftscript` with no arguments enters the interactive REPL — a terminal UI with a prompt, command history, tab completion, and navigable lists.
+
+```
+$ draftscript
+DraftScript interactive. Type /help for commands. /exit or ^C to quit.
+
+> /new --tags work
+── Compose your draft (type /end on a blank line to save, /cancel to abort) ──
+Meeting notes from today:
+- Q3 roadmap discussed
+- Budget approved
+/end
+Created: A2A1F93B-25D4-416B-9B5F-3D192DBE6AA4
+
+> /aisearch "design ideas"
+Fetching drafts... 50 found.
+Querying LLM (gemma4:e2b)...
+[LLM response with relevant results]
+
+── All drafts (↑/↓ select, Enter view, q back) ──
+  a1b2c3d4  some ideas about the new feature...
+→ e5f6g7h8  meeting notes from last week...
+  i9j0k1l2  design brainstorm session...
+```
+
+### Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/new [--tags <t>] [--flag]` | Enter compose mode, type/paste content, end with `/end` |
+| `/list [--tag <t>] [--folder <f>] [--flagged] [--search <q>] [--limit <n>]` | List drafts |
+| `/search <q> [--folder <f>] [--limit <n>]` | Search drafts, results are selectable |
+| `/aisearch <q> [--limit <n>]` | AI-powered semantic search, browse results |
+| `/get <uuid>` | Show a draft's full content |
+| `/current` | Show the draft currently open in the editor |
+| `/action <name> [--uuid <uuid>]` | Run a Drafts action |
+| `/tag <uuid> <tag> ...` | Set tags on a draft |
+| `/flag <uuid> [--unflag]` | Toggle flagged state |
+| `/folder <uuid> <inbox\|archive\|trash>` | Move a draft to a folder |
+| `/help` | Show all commands |
+| `/exit` | Quit the REPL |
+
+### Composing a Draft
+
+```
+> /new
+── Compose (type /end on a blank line to save, /cancel to abort) ──
+Your multi-line draft content here.
+You can paste or type freely.
+/end
+Created: A2A1F93B-25D4-416B-9B5F-3D192DBE6AA4
+```
+
+Options like `--tags work,urgent --flag` can be added on the `/new` line.
+
+### Navigating Results
+
+When search or aisearch returns multiple results, a navigable list appears:
+
+- **↑/↓** — move selection
+- **Enter** — view the full draft (scroll with ↑/↓, Esc to go back)
+- **q** — exit the list and return to the prompt
+
+### Tab Completion
+
+Press Tab to auto-complete command names. Multiple matches show all possibilities.
+
+## One-Shot CLI Commands
+
+All commands also work directly from the shell for scripting or quick use:
 
 ### `create`
-
-Create a new draft.
 
 ```
 draftscript create [<text>] [--tags <tags>] [--folder <folder>] [--flag]
@@ -83,8 +155,6 @@ echo "Piped note" | draftscript create
 
 ### `list`
 
-List drafts with optional filters.
-
 ```
 draftscript list [--tag <tag>] [--folder <folder>] [--flagged] [--search <query>] [--limit <n>]
 ```
@@ -105,8 +175,6 @@ draftscript list --folder inbox --flagged --limit 20
 
 ### `get`
 
-Get a draft's full content by UUID.
-
 ```
 draftscript get <uuid>
 ```
@@ -126,8 +194,6 @@ draftscript current
 ```
 
 ### `search`
-
-Full-text search across draft content.
 
 ```
 draftscript search <query> [--folder <folder>] [--limit <n>]
@@ -259,31 +325,38 @@ curl -s https://example.com/notes.txt | draftscript create --tags imported
 ## Examples
 
 ```bash
-# Capture a quick thought
+# Launch the interactive REPL
+draftscript
+
+# In the REPL: compose a new draft
+> /new --tags work
+
+# In the REPL: AI search and browse results
+> /aisearch "vacation planning"
+
+# One-shot: capture a quick thought
 draftscript create "Remember to file taxes by April 15"
 
-# Find everything in the archive with "report"
+# One-shot: find everything in the archive with "report"
 draftscript search report --folder archive
 
 # Flag the current draft and move it to the inbox
 draftscript flag $(draftscript current | head -1 | awk '{print $2}')
 draftscript folder $(draftscript current | head -1 | awk '{print $2}') inbox
-
-# Semantic search with the most recent 100 drafts
-draftscript aisearch "vacation planning" --limit 100
 ```
 
 ## Project Layout
 
 ```
 DraftScript/
-├── Package.swift              # Swift Package Manager manifest
+├── Package.swift                     # Swift Package Manager manifest
 ├── Sources/
 │   └── draftscript/
-│       ├── CLI.swift           # @main entry point, command configuration
-│       ├── Commands.swift      # All 10 subcommand implementations
-│       ├── DraftsBridge.swift  # AppleScript execution layer
-│       └── LLMService.swift    # Ollama API client for AI search
+│       ├── CLI.swift                 # @main entry point, command configuration
+│       ├── Commands.swift            # One-shot subcommand implementations
+│       ├── DraftsBridge.swift        # AppleScript execution layer
+│       ├── LLMService.swift          # Ollama API client for AI search
+│       └── Interactive.swift         # Interactive REPL, list navigator, compose mode
 └── README.md
 ```
 

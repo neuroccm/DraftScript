@@ -1,7 +1,33 @@
+# Build artifacts
 .build/
 .build-arm64/
 .build-x86_64/
 Package.resolved
+
+# Xcode
 *.xcuserdata
 *.xcworkspace
+*.xcscmblueprint
+
+# macOS
 .DS_Store
+*.swp
+*.swo
+*~
+
+# Secrets & config
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+secrets*
+credentials*
+config.local
+config.override.*
+
+# Personal data
+notes/
+data/
+backups/
+*.txt
