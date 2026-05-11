@@ -6,7 +6,7 @@ struct DraftScript: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "draftscript",
         abstract: "Interact with the Drafts app from the command line.",
-        version: "1.1.0",
+        version: "1.1.1",
         subcommands: [
             InteractiveREPL.self,
             Create.self,

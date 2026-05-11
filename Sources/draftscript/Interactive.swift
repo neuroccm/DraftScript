@@ -69,6 +69,114 @@ func styled(_ text: String, _ style: Style) -> String {
     return "\u{1B}[\(codes.map(String.init).joined(separator: ";"))m\(text)\u{1B}[0m"
 }
 
+var ollamaUp: Bool = false
+
+func promptText() -> String {
+    let dot = ollamaUp ? "\u{25CF}" : "\u{25CB}"
+    let dotStyle = Style(fg: ollamaUp ? 32 : 31)
+    return "\(styled(dot, dotStyle)) \(styled("> ", currentTheme.prompt))"
+}
+
+struct AISearchTerm {
+    let text: String
+    let variants: [String]
+}
+
+func commandQuery(_ cmd: ParsedCmd) -> String? {
+    if !cmd.args.isEmpty { return cmd.args.joined(separator: " ") }
+    return cmd.options["query"]
+}
+
+func aiSearchTerms(from query: String) -> [AISearchTerm] {
+    let lowerQuery = query.lowercased()
+    let stopwords: Set<String> = [
+        "a", "an", "and", "are", "as", "at", "based", "be", "been", "between", "by", "can",
+        "compare", "compared", "did", "do", "does", "for", "from", "had", "has", "have", "heavier",
+        "heavy", "how", "i", "in", "is", "it", "lighter", "light", "me", "my", "of", "on", "or",
+        "than", "that", "the", "them", "then", "there", "these", "this", "to", "using", "was", "were",
+        "what", "when", "where", "which", "who", "why", "with"
+    ]
+
+    var rawTerms = lowerQuery
+        .split { !$0.isLetter && !$0.isNumber }
+        .map(String.init)
+        .filter { $0.count >= 3 && !stopwords.contains($0) }
+
+    if lowerQuery.contains("heavier") || lowerQuery.contains("lighter") || lowerQuery.contains("weight") || lowerQuery.contains("weigh") {
+        rawTerms.append("weight")
+    }
+
+    var seen = Set<String>()
+    return rawTerms.compactMap { term in
+        guard seen.insert(term).inserted else { return nil }
+        var variants = [term]
+        if term == "thunderburt" {
+            variants.append(contentsOf: ["thunder burt", "thunder", "burt"])
+        } else if term == "weight" {
+            variants.append(contentsOf: ["weigh", "grams"])
+        }
+        return AISearchTerm(text: term, variants: Array(NSOrderedSet(array: variants)) as? [String] ?? variants)
+    }
+}
+
+func aiSearchScore(content: String, terms: [AISearchTerm]) -> Int {
+    let lower = content.lowercased()
+    var score = 0
+    var matchedGroups = 0
+
+    for term in terms {
+        var groupMatches = 0
+        for variant in term.variants {
+            let needle = variant.lowercased()
+            guard !needle.isEmpty else { continue }
+            groupMatches += lower.components(separatedBy: needle).count - 1
+        }
+        if groupMatches > 0 {
+            matchedGroups += 1
+            score += 10 + groupMatches
+        }
+    }
+
+    return score + (matchedGroups * 25)
+}
+
+func fetchAISearchDrafts(query: String, limit: Int) throws -> (drafts: [(uuid: String, content: String)], terms: [AISearchTerm], fallback: Bool) {
+    let terms = aiSearchTerms(from: query)
+    let candidateLimit = max(1, min(limit, 8))
+    var orderedIDs: [String] = []
+    var seenIDs = Set<String>()
+
+    for term in terms {
+        for variant in term.variants {
+            let matches = try DraftsBridge.listDrafts(tag: nil, folder: nil, flagged: nil, search: variant, limit: candidateLimit)
+            for match in matches where seenIDs.insert(match.uuid).inserted {
+                orderedIDs.append(match.uuid)
+            }
+        }
+    }
+
+    var drafts: [(uuid: String, content: String)] = []
+    for uuid in orderedIDs.prefix(candidateLimit) {
+        if let full = try? DraftsBridge.getDraft(uuid: uuid),
+           let content = full.content,
+           !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            drafts.append((uuid: full.uuid, content: content))
+        }
+    }
+
+    if drafts.isEmpty {
+        drafts = try DraftsBridge.fetchAllDrafts(limit: candidateLimit)
+        return (drafts, terms, true)
+    }
+
+    let ranked = drafts
+        .map { draft in (draft: draft, score: aiSearchScore(content: draft.content, terms: terms)) }
+        .sorted { lhs, rhs in lhs.score == rhs.score ? lhs.draft.uuid < rhs.draft.uuid : lhs.score > rhs.score }
+
+    let filtered = ranked.filter { $0.score > 0 }.map(\.draft)
+    return (Array((filtered.isEmpty ? drafts : filtered).prefix(candidateLimit)), terms, false)
+}
+
 // MARK: - Key
 
 enum Key {
@@ -132,7 +240,8 @@ func clearLine() {
 
 func readKey() -> Key {
     var byte: UInt8 = 0
-    guard read(STDIN_FILENO, &byte, 1) == 1 else { return .unknown }
+    let n = read(STDIN_FILENO, &byte, 1)
+    guard n == 1 else { return n == 0 ? .ctrlD : .unknown }
 
     switch byte {
     case 0x03: return .ctrlC
@@ -226,17 +335,12 @@ struct LineEditor {
     var historyIdx: Int = -1
     var tabCycle: [String] = []
     var tabIdx: Int = 0
-    let prompt: String
 
     static let commands = [
         "new", "list", "search", "aisearch", "get",
         "current", "action", "tag", "flag", "folder",
-        "help", "exit"
+        "model", "theme", "help", "exit"
     ]
-
-    init(prompt: String = "> ") {
-        self.prompt = prompt
-    }
 
     mutating func reset() {
         buffer = ""
@@ -306,37 +410,36 @@ struct LineEditor {
     }
 
     mutating func readLine() -> String {
-        let styledPrompt = styled(prompt, currentTheme.prompt)
-        writeStr(styledPrompt + buffer)
+        writeStr(promptText() + buffer)
         while true {
             let key = readKey()
             switch key {
             case .char(let c):
                 addChar(c)
                 clearLine()
-                writeStr(styledPrompt + buffer)
+                writeStr(promptText() + buffer)
             case .backspace:
                 deleteChar()
                 clearLine()
-                writeStr(styledPrompt + buffer)
+                writeStr(promptText() + buffer)
             case .up:
                 historyPrev()
                 clearLine()
-                writeStr(styledPrompt + buffer)
+                writeStr(promptText() + buffer)
             case .down:
                 historyNext()
                 clearLine()
-                writeStr(styledPrompt + buffer)
+                writeStr(promptText() + buffer)
             case .tab:
                 tabComplete()
                 clearLine()
-                writeStr(styledPrompt + buffer)
+                writeStr(promptText() + buffer)
                 if tabCycle.count > 1 {
                     writeLine()
                     let suggestions = tabCycle.map { styled("/" + $0, currentTheme.accent) }.joined(separator: "  ")
                     writeStr("  " + suggestions)
                     clearLine()
-                    writeStr(styledPrompt + buffer)
+                    writeStr(promptText() + buffer)
                 }
             case .enter:
                 writeLine()
@@ -551,6 +654,7 @@ func showHelp() {
     writeLine("  \(styled("/tag", a)) <uuid> <tag> ...")
     writeLine("  \(styled("/flag", a)) <uuid> [--unflag]")
     writeLine("  \(styled("/folder", a)) <uuid> <inbox|archive|trash>")
+    writeLine("  \(styled("/model", a)) <name>     Set Ollama model")
     writeLine("  \(styled("/help", a))  \(styled("/exit", a))")
 }
 
@@ -559,6 +663,14 @@ func runREPL() throws {
     defer { disableRawMode() }
 
     writeLine(styled("DraftScript interactive. Type /help for commands. /exit or ^C to quit.", currentTheme.header))
+
+    writeStr("Checking Ollama... ")
+    ollamaUp = LLMService.isAvailable
+    if ollamaUp {
+        writeLine("\(styled("\u{25CF} \(LLMService.model)", Style(fg: 32)))")
+    } else {
+        writeLine("\(styled("\u{25CB} offline", Style(fg: 31)))")
+    }
     writeLine("")
 
     var editor = LineEditor()
@@ -609,7 +721,7 @@ func runREPL() throws {
             }
 
         case "search":
-            guard let query = cmd.args.first ?? cmd.options["query"] else {
+            guard let query = commandQuery(cmd) else {
                 writeLine(styled("Usage: /search <query> [--folder <f>] [--limit <n>]", currentTheme.dim))
                 break
             }
@@ -632,7 +744,7 @@ func runREPL() throws {
             }
 
         case "aisearch":
-            guard let query = cmd.args.first ?? cmd.options["query"] else {
+            guard let query = commandQuery(cmd) else {
                 writeLine(styled("Usage: /aisearch <query> [--limit <n>]", currentTheme.dim))
                 break
             }
@@ -641,20 +753,30 @@ func runREPL() throws {
                 writeLine(styled("Ollama is not available.", currentTheme.error) + "\r\nInstall from https://ollama.com then pull: ollama pull gemma4")
                 break
             }
-            writeStr(styled("Fetching drafts... ", currentTheme.accent))
+
+            writeStr(styled("Searching for \"\(query)\"... ", currentTheme.accent))
             do {
-                let drafts = try DraftsBridge.fetchAllDrafts(limit: limit)
-                writeLine(styled("\(drafts.count) found.", currentTheme.dim))
+                let result = try fetchAISearchDrafts(query: query, limit: limit)
+                let drafts = result.drafts
                 guard !drafts.isEmpty else { writeLine(styled("No drafts to search.", currentTheme.dim)); break }
 
+                if result.terms.isEmpty {
+                    writeLine(styled("No search terms extracted. Using recent drafts.", currentTheme.dim))
+                } else if result.fallback {
+                    let terms = result.terms.map(\.text).joined(separator: ", ")
+                    writeLine(styled("No direct text matches for: \(terms). Using recent drafts.", currentTheme.dim))
+                } else {
+                    let terms = result.terms.map(\.text).joined(separator: ", ")
+                    writeLine(styled("\(drafts.count) matching drafts loaded for: \(terms).", currentTheme.dim))
+                }
+
                 writeLine(styled("Querying LLM (\(LLMService.model))...", currentTheme.accent))
+                writeLine(styled("Synthesizing \(drafts.count) drafts...", currentTheme.dim))
                 let response = try LLMService.searchDrafts(query: query, drafts: drafts)
                 writeLine("")
                 writeLine(response)
                 writeLine("")
-
-                let items: [(uuid: String, content: String)] = drafts
-                navigateList(drafts: items, label: "All drafts")
+                writeLine(styled("Use /get <uuid> to view any draft above.", currentTheme.dim))
             } catch {
                 writeLine("\(styled("Error:", currentTheme.error)) \(error)")
             }
@@ -753,6 +875,14 @@ func runREPL() throws {
                 }
             } else {
                 writeLine("Current theme: \(currentTheme.name)")
+            }
+
+        case "model":
+            if let arg = cmd.args.first {
+                LLMService.model = arg
+                writeLine("\(styled("Model set to", currentTheme.success)) \(styled(arg, currentTheme.accent))")
+            } else {
+                writeLine("Current model: \(styled(LLMService.model, currentTheme.accent))")
             }
 
         default:

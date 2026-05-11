@@ -1,38 +1,72 @@
 import Foundation
 
 struct LLMService {
-    static let model = "gemma4:e2b"
+    static var model: String = {
+        ProcessInfo.processInfo.environment["OLLAMA_MODEL"] ?? "gemma4:e2b"
+    }()
     private static let baseURL = "http://localhost:11434"
 
-    static var isAvailable: Bool {
+    @discardableResult private static func runCurl(args: [String]) throws -> String {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
-        proc.arguments = ["--connect-timeout", "2", "--max-time", "3", "-s", "-o", "/dev/null", "-w", "%{http_code}", "\(baseURL)/api/tags"]
+        proc.arguments = args
+
         let outPipe = Pipe()
+        let errPipe = Pipe()
         proc.standardOutput = outPipe
-        proc.standardError = nil
-        try? proc.run()
+        proc.standardError = errPipe
+
+        try proc.run()
         proc.waitUntilExit()
+
+        if proc.terminationStatus != 0 {
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let msg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "curl failed"
+            throw NSError(domain: "LLMService", code: Int(proc.terminationStatus), userInfo: [NSLocalizedDescriptionKey: msg])
+        }
+
         let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let code = String(data: data, encoding: .utf8) ?? ""
-        return code == "200"
+        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    static var isAvailable: Bool {
+        guard let data = try? runCurl(args: ["-s", "--connect-timeout", "2", "--max-time", "5", "\(baseURL)/api/tags"]),
+              !data.isEmpty,
+              let json = try? JSONSerialization.jsonObject(with: Data(data.utf8)) as? [String: Any],
+              let models = json["models"] as? [[String: Any]] else { return false }
+        return models.contains { ($0["name"] as? String)?.hasPrefix(model) == true }
     }
 
     static func searchDrafts(query: String, drafts: [(uuid: String, content: String)]) throws -> String {
-        let limited = drafts.prefix(50)
+        let limited = drafts.prefix(8)
 
         let draftsText = limited.enumerated().map { (i, d) -> String in
-            "[\(i + 1)] \(d.uuid.prefix(8)): \(d.content.prefix(300).replacingOccurrences(of: "\n", with: " "))"
+            let content = d.content.prefix(4_000).replacingOccurrences(of: "\n", with: " ")
+            return """
+            [\(i + 1)] UUID \(d.uuid.prefix(8))
+            \(content)
+            """
         }.joined(separator: "\n\n")
 
         let prompt = """
-        You have a collection of notes/drafts. Find the ones most relevant to this search query: "\(query)"
+        You are searching and synthesizing a user's Drafts notes.
+
+        User question:
+        \(query)
 
         Drafts:
         \(draftsText)
 
-        Return the numbers of the most relevant drafts (max 5) with a brief reason for each.
-        If nothing is relevant, say so.
+        Answer the user's question using only the draft content above.
+        If the question asks for a comparison, extract the evidence for each compared item separately before concluding.
+        If one item has a value and the other item is missing that value, say that clearly and include the known value.
+        Do not say all data is missing if partial values are present.
+        Do not confuse similarly named products; preserve exact product names from the drafts.
+        If exact sizes differ, state the size caveat before comparing.
+        Compute the answer from the values in the drafts and state the conclusion clearly when enough evidence exists.
+        Cite the supporting draft numbers and UUID prefixes inline.
+        Preserve important numeric values, model names, product names, dates, and qualifiers.
+        If the drafts do not contain enough evidence, say exactly what is missing.
         """
 
         let body: [String: Any] = [
@@ -46,43 +80,35 @@ struct LLMService {
 
         let jsonData = try JSONSerialization.data(withJSONObject: body)
 
-        var request = URLRequest(url: URL(string: "\(baseURL)/api/chat")!)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = jsonData
-        request.timeoutInterval = 60
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("draftscript_llm_\(UUID().uuidString).json")
+        try jsonData.write(to: tempURL)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
 
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: String = ""
-        var error: Error?
+        let result = try runCurl(args: [
+            "-s", "--max-time", "60",
+            "-X", "POST",
+            "\(baseURL)/api/chat",
+            "-H", "Content-Type: application/json",
+            "-d", "@\(tempURL.path)"
+        ])
 
-        URLSession.shared.dataTask(with: request) { data, _, err in
-            if let err = err {
-                error = err
-                semaphore.signal()
-                return
-            }
-            guard let data = data else {
-                error = NSError(domain: "LLMService", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])
-                semaphore.signal()
-                return
-            }
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let message = json["message"] as? [String: Any],
-               let content = message["content"] as? String {
-                result = content
-            } else if let errMsg = String(data: data, encoding: .utf8) {
-                result = errMsg
-            }
-            semaphore.signal()
-        }.resume()
-
-        semaphore.wait()
-
-        if let error = error {
-            throw error
+        guard !result.isEmpty else {
+            throw NSError(domain: "LLMService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Empty response from Ollama"])
         }
 
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let json = try? JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any] else {
+            throw NSError(domain: "LLMService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON from Ollama: \(result.prefix(200))"])
+        }
+
+        if let errMsg = json["error"] as? String {
+            throw NSError(domain: "LLMService", code: -1, userInfo: [NSLocalizedDescriptionKey: errMsg])
+        }
+
+        guard let message = json["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw NSError(domain: "LLMService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unexpected response format from Ollama"])
+        }
+
+        return content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
