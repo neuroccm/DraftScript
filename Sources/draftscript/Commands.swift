@@ -26,7 +26,7 @@ struct Create: ParsableCommand {
             let data = FileHandle.standardInput.readDataToEndOfFile()
             let s = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !s.isEmpty else {
-                print("Error: provide text as argument or pipe it in")
+                print("\(styled("Error:", currentTheme.error)) provide text as argument or pipe it in")
                 throw ExitCode.failure
             }
             content = s
@@ -34,14 +34,14 @@ struct Create: ParsableCommand {
 
         do {
             let uuid = try DraftsBridge.createDraft(content: content, tags: tags, folder: folder, flagged: flag)
-            print("Created: \(uuid)")
+            print("\(styled("Created:", currentTheme.success)) \(styled(uuid, currentTheme.uuid))")
         } catch DraftsError.notAuthorized {
-            print("Note: Grant Terminal access to Drafts in System Settings > Privacy & Security > Automation")
-            print("Falling back to URL scheme (no UUID returned)...")
+            print(styled("Note:", currentTheme.accent) + " Grant Terminal access to Drafts in System Settings > Privacy & Security > Automation")
+            print(styled("Falling back to URL scheme (no UUID returned)...", currentTheme.dim))
             if let result = DraftsBridge.createViaURL(content: content, tags: tags, folder: folder, flagged: flag) {
-                print("Created \(result)")
+                print("\(styled("Created", currentTheme.success)) \(result)")
             } else {
-                print("Failed to create via URL scheme")
+                print(styled("Failed to create via URL scheme", currentTheme.error))
                 throw ExitCode.failure
             }
         }
@@ -71,13 +71,13 @@ struct List: ParsableCommand {
     func run() throws {
         let drafts = try DraftsBridge.listDrafts(tag: tag, folder: folder, flagged: flagged ? true : nil, search: search, limit: limit)
         guard !drafts.isEmpty else {
-            print("No drafts found")
+            print(styled("No drafts found", currentTheme.dim))
             return
         }
         for d in drafts {
             print(d)
         }
-        print("---\n\(drafts.count) draft(s)")
+        print(styled("---\n\(drafts.count) draft(s)", currentTheme.dim))
     }
 }
 
@@ -91,10 +91,10 @@ struct Get: ParsableCommand {
 
     func run() throws {
         let draft = try DraftsBridge.getDraft(uuid: uuid)
-        print("UUID:   \(draft.uuid)")
-        print("Flagged: \(draft.flagged)")
-        print("Folder:  \(draft.folder)")
-        print("---")
+        print("\(styled("UUID:", currentTheme.dim))   \(styled(draft.uuid, currentTheme.uuid))")
+        print("\(styled("Flagged:", currentTheme.dim)) \(draft.flagged)")
+        print("\(styled("Folder:", currentTheme.dim))  \(draft.folder)")
+        print(styled("---", currentTheme.dim))
         print(draft.content ?? draft.preview)
     }
 }
@@ -106,10 +106,10 @@ struct Current: ParsableCommand {
 
     func run() throws {
         let draft = try DraftsBridge.getCurrentDraft()
-        print("UUID:   \(draft.uuid)")
-        print("Flagged: \(draft.flagged)")
-        print("Folder:  \(draft.folder)")
-        print("---")
+        print("\(styled("UUID:", currentTheme.dim))   \(styled(draft.uuid, currentTheme.uuid))")
+        print("\(styled("Flagged:", currentTheme.dim)) \(draft.flagged)")
+        print("\(styled("Folder:", currentTheme.dim))  \(draft.folder)")
+        print(styled("---", currentTheme.dim))
         print(draft.content ?? draft.preview)
     }
 }
@@ -134,13 +134,13 @@ struct TextSearch: ParsableCommand {
     func run() throws {
         let drafts = try DraftsBridge.listDrafts(tag: nil, folder: folder, flagged: nil, search: query, limit: limit)
         guard !drafts.isEmpty else {
-            print("No drafts matching \"\(query)\"")
+            print(styled("No drafts matching \"\(query)\"", currentTheme.dim))
             return
         }
         for d in drafts {
             print(d)
         }
-        print("---\n\(drafts.count) match(es)")
+        print(styled("---\n\(drafts.count) match(es)", currentTheme.dim))
     }
 }
 
@@ -162,34 +162,34 @@ struct AISearch: ParsableCommand {
     var limit: Int = 50
 
     func run() throws {
-        print("Fetching drafts...", terminator: " ")
+        print(styled("Fetching drafts...", currentTheme.accent), terminator: " ")
         let drafts = try DraftsBridge.fetchAllDrafts(limit: limit)
-        print("\(drafts.count) found")
+        print(styled("\(drafts.count) found", currentTheme.dim))
 
         guard !drafts.isEmpty else {
-            print("No drafts to search")
+            print(styled("No drafts to search", currentTheme.dim))
             return
         }
 
         guard LLMService.isAvailable else {
-            print("""
+            print(styled("""
             Ollama is not available.
             Install it from https://ollama.com then pull a model:
               ollama pull gemma4
-            """)
+            """, currentTheme.error))
             throw ExitCode.failure
         }
 
         if verbose {
-            print("\nAll drafts:")
+            print(styled("\nAll drafts:", currentTheme.header))
             for (i, d) in drafts.enumerated() {
                 let preview = d.content.prefix(100).replacingOccurrences(of: "\n", with: " ")
-                print("  [\(i + 1)] \(d.uuid.prefix(8))  \(preview)")
+                print("  [\(i + 1)] \(styled(String(d.uuid.prefix(8)), currentTheme.uuid))  \(preview)")
             }
             print()
         }
 
-        print("Querying LLM (\(LLMService.model))...")
+        print(styled("Querying LLM (\(LLMService.model))...", currentTheme.accent))
         let response = try LLMService.searchDrafts(query: query, drafts: drafts)
         print()
         print(response)
@@ -232,7 +232,7 @@ struct SetTag: ParsableCommand {
 
     func run() throws {
         guard !tags.isEmpty else {
-            print("Error: provide at least one tag")
+            print("\(styled("Error:", currentTheme.error)) provide at least one tag")
             throw ExitCode.failure
         }
         let result = try DraftsBridge.setTags(uuid: uuid, tags: tags)

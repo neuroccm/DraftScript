@@ -2,6 +2,73 @@ import Foundation
 import Darwin
 import ArgumentParser
 
+// MARK: - Theme/Style
+
+struct Style {
+    var fg: Int?
+    var bold: Bool = false
+    var dim: Bool = false
+}
+
+struct Theme {
+    let name: String
+    var prompt: Style
+    var header: Style
+    var success: Style
+    var error: Style
+    var accent: Style
+    var dim: Style
+    var uuid: Style
+    var cursor: Style
+
+    static let dark = Theme(
+        name: "dark",
+        prompt: Style(fg: 96, bold: true),
+        header: Style(fg: 94, bold: true),
+        success: Style(fg: 32),
+        error: Style(fg: 31, bold: true),
+        accent: Style(fg: 94),
+        dim: Style(fg: 90),
+        uuid: Style(fg: 36),
+        cursor: Style(fg: 93, bold: true)
+    )
+
+    static let light = Theme(
+        name: "light",
+        prompt: Style(fg: 34, bold: true),
+        header: Style(fg: 34, bold: true),
+        success: Style(fg: 32),
+        error: Style(fg: 31, bold: true),
+        accent: Style(fg: 34),
+        dim: Style(fg: 90),
+        uuid: Style(fg: 36),
+        cursor: Style(fg: 33, bold: true)
+    )
+}
+
+var currentTheme: Theme = {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+    task.arguments = ["read", "-g", "AppleInterfaceStyle"]
+    let outPipe = Pipe()
+    task.standardOutput = outPipe
+    task.standardError = FileHandle.nullDevice
+    try? task.run()
+    task.waitUntilExit()
+    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+    let style = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return style == "Dark" ? .dark : .dark
+}()
+
+func styled(_ text: String, _ style: Style) -> String {
+    var codes: [Int] = []
+    if style.bold { codes.append(1) }
+    if style.dim { codes.append(2) }
+    if let fg = style.fg { codes.append(fg) }
+    if codes.isEmpty { return text }
+    return "\u{1B}[\(codes.map(String.init).joined(separator: ";"))m\(text)\u{1B}[0m"
+}
+
 // MARK: - Key
 
 enum Key {
@@ -239,35 +306,37 @@ struct LineEditor {
     }
 
     mutating func readLine() -> String {
-        writeStr(prompt + buffer)
+        let styledPrompt = styled(prompt, currentTheme.prompt)
+        writeStr(styledPrompt + buffer)
         while true {
             let key = readKey()
             switch key {
             case .char(let c):
                 addChar(c)
                 clearLine()
-                writeStr(prompt + buffer)
+                writeStr(styledPrompt + buffer)
             case .backspace:
                 deleteChar()
                 clearLine()
-                writeStr(prompt + buffer)
+                writeStr(styledPrompt + buffer)
             case .up:
                 historyPrev()
                 clearLine()
-                writeStr(prompt + buffer)
+                writeStr(styledPrompt + buffer)
             case .down:
                 historyNext()
                 clearLine()
-                writeStr(prompt + buffer)
+                writeStr(styledPrompt + buffer)
             case .tab:
                 tabComplete()
                 clearLine()
-                writeStr(prompt + buffer)
+                writeStr(styledPrompt + buffer)
                 if tabCycle.count > 1 {
                     writeLine()
-                    writeStr("  " + tabCycle.map { "/" + $0 }.joined(separator: "  "))
+                    let suggestions = tabCycle.map { styled("/" + $0, currentTheme.accent) }.joined(separator: "  ")
+                    writeStr("  " + suggestions)
                     clearLine()
-                    writeStr(prompt + buffer)
+                    writeStr(styledPrompt + buffer)
                 }
             case .enter:
                 writeLine()
@@ -290,7 +359,7 @@ struct LineEditor {
 // MARK: - Compose mode
 
 func runCompose(options: [String: String], flags: Set<String>) {
-    writeLine("── Compose your draft (type /end on a blank line to save, /cancel to abort) ──")
+    writeLine(styled("── Compose your draft (type /end on a blank line to save, /cancel to abort) ──", currentTheme.header))
     var lines: [String] = []
     var line = ""
 
@@ -299,7 +368,7 @@ func runCompose(options: [String: String], flags: Set<String>) {
         writeStr(line)
     }
 
-    while true {
+    composeLoop: while true {
         let key = readKey()
         switch key {
         case .char(let c):
@@ -318,17 +387,22 @@ func runCompose(options: [String: String], flags: Set<String>) {
             writeLine()
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed == "/end" {
-                break
+                break composeLoop
+            }
+            if trimmed.hasSuffix("/end") {
+                let before = String(trimmed.dropLast(4)).trimmingCharacters(in: .whitespaces)
+                if !before.isEmpty { lines.append(before) }
+                break composeLoop
             }
             if trimmed == "/cancel" {
-                writeLine("Cancelled.")
+                writeLine(styled("Cancelled.", currentTheme.dim))
                 return
             }
             lines.append(line)
             line = ""
         case .ctrlC, .ctrlD:
             writeLine()
-            writeLine("Cancelled.")
+            writeLine(styled("Cancelled.", currentTheme.dim))
             return
         default:
             break
@@ -337,7 +411,7 @@ func runCompose(options: [String: String], flags: Set<String>) {
 
     let content = lines.joined(separator: "\n")
     guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-        writeLine("Empty draft — not created.")
+        writeLine(styled("Empty draft — not created.", currentTheme.dim))
         return
     }
 
@@ -347,16 +421,16 @@ func runCompose(options: [String: String], flags: Set<String>) {
         let folder = options["folder"]
         let flagged = flags.contains("flag")
         let uuid = try DraftsBridge.createDraft(content: content, tags: tags, folder: folder, flagged: flagged)
-        writeLine("Created: \(uuid)")
+        writeLine("\(styled("Created:", currentTheme.success)) \(styled(uuid, currentTheme.uuid))")
     } catch DraftsError.notAuthorized {
         writeLine("AppleScript not authorized. Trying URL scheme...")
         if let r = DraftsBridge.createViaURL(content: content, tags: options["tags"], folder: options["folder"], flagged: flags.contains("flag")) {
-            writeLine("Created \(r)")
+            writeLine("\(styled("Created", currentTheme.success)) \(r)")
         } else {
             writeLine("Failed to create draft.")
         }
     } catch {
-        writeLine("Error: \(error)")
+        writeLine("\(styled("Error:", currentTheme.error)) \(error)")
     }
 }
 
@@ -379,7 +453,7 @@ func viewContent(_ content: String, label: String) {
             writeStr("\u{1B}[\(prevCount)A")
         }
         writeStr("\r\u{1B}[K")
-        writeLine("\u{2500}\u{2500} \(label) (\u{2191}/\u{2193} scroll, Esc back) \u{2500}\u{2500}")
+        writeLine(styled("\u{2500}\u{2500} \(label) (\u{2191}/\u{2193} scroll, Esc back) \u{2500}\u{2500}", currentTheme.header))
         for i in offset..<end {
             writeStr("\r\u{1B}[K")
             writeLine(" " + lines[i])
@@ -419,13 +493,14 @@ func navigateList(drafts: [(uuid: String, content: String)], label: String) {
             writeStr("\u{1B}[\(prevCount)A")
         }
         writeStr("\r\u{1B}[K")
-        writeLine("\u{2500}\u{2500} \(label) (\u{2191}/\u{2193} select, Enter view, q back) \u{2500}\u{2500}")
+        writeLine(styled("\u{2500}\u{2500} \(label) (\u{2191}/\u{2193} select, Enter view, q back) \u{2500}\u{2500}", currentTheme.header))
         for i in offset..<end {
             writeStr("\r\u{1B}[K")
             let d = drafts[i]
             let preview = d.content.prefix(width - 10).replacingOccurrences(of: "\n", with: " ")
-            let cursor = i == idx ? "\u{2192} " : "  "
-            writeLine("\(cursor)\(d.uuid.prefix(8))  \(preview)")
+            let cursor = i == idx ? styled("\u{2192} ", currentTheme.cursor) : "  "
+            let uuid = styled(String(d.uuid.prefix(8)), currentTheme.uuid)
+            writeLine("\(cursor)\(uuid)  \(preview)")
         }
         prevCount = count
     }
@@ -464,25 +539,26 @@ func navigateList(drafts: [(uuid: String, content: String)], label: String) {
 // MARK: - REPL
 
 func showHelp() {
-    writeLine("Commands:")
-    writeLine("  /new [--tags <t>] [--flag]     Compose and create a draft")
-    writeLine("  /list [--tag <t>] [--folder <f>] [--flagged] [--search <q>] [--limit <n>]")
-    writeLine("  /search <q> [--folder <f>] [--limit <n>]")
-    writeLine("  /aisearch <q> [--limit <n>]")
-    writeLine("  /get <uuid>")
-    writeLine("  /current")
-    writeLine("  /action <name> [--uuid <uuid>]")
-    writeLine("  /tag <uuid> <tag> ...")
-    writeLine("  /flag <uuid> [--unflag]")
-    writeLine("  /folder <uuid> <inbox|archive|trash>")
-    writeLine("  /help  /exit")
+    let a = currentTheme.accent
+    writeLine(styled("Commands:", currentTheme.header))
+    writeLine("  \(styled("/new", a)) [--tags <t>] [--flag]     Compose and create a draft")
+    writeLine("  \(styled("/list", a)) [--tag <t>] [--folder <f>] [--flagged] [--search <q>] [--limit <n>]")
+    writeLine("  \(styled("/search", a)) <q> [--folder <f>] [--limit <n>]")
+    writeLine("  \(styled("/aisearch", a)) <q> [--limit <n>]")
+    writeLine("  \(styled("/get", a)) <uuid>")
+    writeLine("  \(styled("/current", a))")
+    writeLine("  \(styled("/action", a)) <name> [--uuid <uuid>]")
+    writeLine("  \(styled("/tag", a)) <uuid> <tag> ...")
+    writeLine("  \(styled("/flag", a)) <uuid> [--unflag]")
+    writeLine("  \(styled("/folder", a)) <uuid> <inbox|archive|trash>")
+    writeLine("  \(styled("/help", a))  \(styled("/exit", a))")
 }
 
 func runREPL() throws {
     enableRawMode()
     defer { disableRawMode() }
 
-    writeLine("DraftScript interactive. Type /help for commands. /exit or ^C to quit.")
+    writeLine(styled("DraftScript interactive. Type /help for commands. /exit or ^C to quit.", currentTheme.header))
     writeLine("")
 
     var editor = LineEditor()
@@ -495,16 +571,16 @@ func runREPL() throws {
 
         guard let cmd = parseCommand(trimmed) else {
             if trimmed.hasPrefix("/") {
-                writeLine("Unknown command: \(trimmed)")
+                writeLine("\(styled("Unknown command:", currentTheme.error)) \(trimmed)")
             } else {
-                writeLine("Type /help for commands")
+                writeLine(styled("Type /help for commands", currentTheme.dim))
             }
             continue
         }
 
         switch cmd.name {
         case "exit", "quit":
-            writeLine("Goodbye.")
+            writeLine(styled("Goodbye.", currentTheme.header))
             return
 
         case "help":
@@ -522,19 +598,19 @@ func runREPL() throws {
                 let limit = Int(cmd.options["limit"] ?? "") ?? 50
                 let drafts = try DraftsBridge.listDrafts(tag: tag, folder: folder, flagged: flagged, search: search, limit: limit)
                 if drafts.isEmpty {
-                    writeLine("No drafts found.")
+                    writeLine(styled("No drafts found.", currentTheme.dim))
                 } else {
                     for d in drafts { writeLine(d.description) }
-                    writeLine("---")
-                    writeLine("\(drafts.count) draft(s)")
+                    writeLine(styled("---", currentTheme.dim))
+                    writeLine(styled("\(drafts.count) draft(s)", currentTheme.dim))
                 }
             } catch {
-                writeLine("Error: \(error)")
+                writeLine("\(styled("Error:", currentTheme.error)) \(error)")
             }
 
         case "search":
             guard let query = cmd.args.first ?? cmd.options["query"] else {
-                writeLine("Usage: /search <query> [--folder <f>] [--limit <n>]")
+                writeLine(styled("Usage: /search <query> [--folder <f>] [--limit <n>]", currentTheme.dim))
                 break
             }
             do {
@@ -542,36 +618,36 @@ func runREPL() throws {
                 let limit = Int(cmd.options["limit"] ?? "") ?? 50
                 let drafts = try DraftsBridge.listDrafts(tag: nil, folder: folder, flagged: nil, search: query, limit: limit)
                 if drafts.isEmpty {
-                    writeLine("No drafts matching \"\(query)\"")
+                    writeLine(styled("No drafts matching \"\(query)\"", currentTheme.dim))
                 } else if drafts.count > 1 {
                     let items: [(uuid: String, content: String)] = drafts.map { ($0.uuid, $0.content ?? $0.preview) }
                     navigateList(drafts: items, label: "Results for \"\(query)\"")
                 } else {
                     for d in drafts { writeLine(d.description) }
-                    writeLine("---")
-                    writeLine("\(drafts.count) match(es)")
+                    writeLine(styled("---", currentTheme.dim))
+                    writeLine(styled("\(drafts.count) match(es)", currentTheme.dim))
                 }
             } catch {
-                writeLine("Error: \(error)")
+                writeLine("\(styled("Error:", currentTheme.error)) \(error)")
             }
 
         case "aisearch":
             guard let query = cmd.args.first ?? cmd.options["query"] else {
-                writeLine("Usage: /aisearch <query> [--limit <n>]")
+                writeLine(styled("Usage: /aisearch <query> [--limit <n>]", currentTheme.dim))
                 break
             }
             let limit = Int(cmd.options["limit"] ?? "") ?? 50
             guard LLMService.isAvailable else {
-                writeLine("Ollama is not available.\r\nInstall from https://ollama.com then pull: ollama pull gemma4")
+                writeLine(styled("Ollama is not available.", currentTheme.error) + "\r\nInstall from https://ollama.com then pull: ollama pull gemma4")
                 break
             }
-            writeStr("Fetching drafts... ")
+            writeStr(styled("Fetching drafts... ", currentTheme.accent))
             do {
                 let drafts = try DraftsBridge.fetchAllDrafts(limit: limit)
-                writeLine("\(drafts.count) found.")
-                guard !drafts.isEmpty else { writeLine("No drafts to search."); break }
+                writeLine(styled("\(drafts.count) found.", currentTheme.dim))
+                guard !drafts.isEmpty else { writeLine(styled("No drafts to search.", currentTheme.dim)); break }
 
-                writeLine("Querying LLM (\(LLMService.model))...")
+                writeLine(styled("Querying LLM (\(LLMService.model))...", currentTheme.accent))
                 let response = try LLMService.searchDrafts(query: query, drafts: drafts)
                 writeLine("")
                 writeLine(response)
@@ -580,40 +656,40 @@ func runREPL() throws {
                 let items: [(uuid: String, content: String)] = drafts
                 navigateList(drafts: items, label: "All drafts")
             } catch {
-                writeLine("Error: \(error)")
+                writeLine("\(styled("Error:", currentTheme.error)) \(error)")
             }
 
         case "get":
             guard let uuid = cmd.args.first else {
-                writeLine("Usage: /get <uuid>")
+                writeLine(styled("Usage: /get <uuid>", currentTheme.dim))
                 break
             }
             do {
                 let d = try DraftsBridge.getDraft(uuid: uuid)
-                writeLine("UUID:   \(d.uuid)")
-                writeLine("Flagged: \(d.flagged)")
-                writeLine("Folder:  \(d.folder)")
-                writeLine("---")
+                writeLine("\(styled("UUID:", currentTheme.dim))   \(styled(d.uuid, currentTheme.uuid))")
+                writeLine("\(styled("Flagged:", currentTheme.dim)) \(d.flagged)")
+                writeLine("\(styled("Folder:", currentTheme.dim))  \(d.folder)")
+                writeLine(styled("---", currentTheme.dim))
                 writeLine(d.content ?? d.preview)
             } catch {
-                writeLine("Error: \(error)")
+                writeLine("\(styled("Error:", currentTheme.error)) \(error)")
             }
 
         case "current":
             do {
                 let d = try DraftsBridge.getCurrentDraft()
-                writeLine("UUID:   \(d.uuid)")
-                writeLine("Flagged: \(d.flagged)")
-                writeLine("Folder:  \(d.folder)")
-                writeLine("---")
+                writeLine("\(styled("UUID:", currentTheme.dim))   \(styled(d.uuid, currentTheme.uuid))")
+                writeLine("\(styled("Flagged:", currentTheme.dim)) \(d.flagged)")
+                writeLine("\(styled("Folder:", currentTheme.dim))  \(d.folder)")
+                writeLine(styled("---", currentTheme.dim))
                 writeLine(d.content ?? d.preview)
             } catch {
-                writeLine("Error: \(error)")
+                writeLine("\(styled("Error:", currentTheme.error)) \(error)")
             }
 
         case "action":
             guard let name = cmd.args.first else {
-                writeLine("Usage: /action <name> [--uuid <uuid>]")
+                writeLine(styled("Usage: /action <name> [--uuid <uuid>]", currentTheme.dim))
                 break
             }
             do {
@@ -621,12 +697,12 @@ func runREPL() throws {
                 let r = try DraftsBridge.runAction(name: name, uuid: uuid)
                 writeLine(r)
             } catch {
-                writeLine("Error: \(error)")
+                writeLine("\(styled("Error:", currentTheme.error)) \(error)")
             }
 
         case "tag":
             guard cmd.args.count >= 2 else {
-                writeLine("Usage: /tag <uuid> <tag> ...")
+                writeLine(styled("Usage: /tag <uuid> <tag> ...", currentTheme.dim))
                 break
             }
             do {
@@ -635,12 +711,12 @@ func runREPL() throws {
                 let r = try DraftsBridge.setTags(uuid: uuid, tags: tags)
                 writeLine(r)
             } catch {
-                writeLine("Error: \(error)")
+                writeLine("\(styled("Error:", currentTheme.error)) \(error)")
             }
 
         case "flag":
             guard let uuid = cmd.args.first else {
-                writeLine("Usage: /flag <uuid> [--unflag]")
+                writeLine(styled("Usage: /flag <uuid> [--unflag]", currentTheme.dim))
                 break
             }
             do {
@@ -648,23 +724,39 @@ func runREPL() throws {
                 let r = try DraftsBridge.setFlag(uuid: uuid, flagged: !unflag)
                 writeLine(r)
             } catch {
-                writeLine("Error: \(error)")
+                writeLine("\(styled("Error:", currentTheme.error)) \(error)")
             }
 
         case "folder":
             guard cmd.args.count >= 2 else {
-                writeLine("Usage: /folder <uuid> <inbox|archive|trash>")
+                writeLine(styled("Usage: /folder <uuid> <inbox|archive|trash>", currentTheme.dim))
                 break
             }
             do {
                 let r = try DraftsBridge.setFolder(uuid: cmd.args[0], folder: cmd.args[1])
                 writeLine(r)
             } catch {
-                writeLine("Error: \(error)")
+                writeLine("\(styled("Error:", currentTheme.error)) \(error)")
+            }
+
+        case "theme":
+            if let arg = cmd.args.first?.lowercased() {
+                switch arg {
+                case "dark":
+                    currentTheme = .dark
+                    writeLine(styled("Theme set to dark", currentTheme.success))
+                case "light":
+                    currentTheme = .light
+                    writeLine(styled("Theme set to light", currentTheme.success))
+                default:
+                    writeLine(styled("Usage: /theme <dark|light>", currentTheme.dim))
+                }
+            } else {
+                writeLine("Current theme: \(currentTheme.name)")
             }
 
         default:
-            writeLine("Unknown command: /\(cmd.name). Type /help")
+                writeLine("\(styled("Unknown command:", currentTheme.error)) /\(cmd.name). Type /help")
         }
     }
 }

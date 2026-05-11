@@ -32,8 +32,10 @@ struct Draft: CustomStringConvertible {
     let content: String?
 
     var description: String {
-        let flag = flagged ? "★" : "·"
-        return "\(flag) \(folder.padding(toLength: 8, withPad: " ", startingAt: 0)) \(uuid.prefix(8))  \(preview)"
+        let flag = flagged ? styled("★", currentTheme.accent) : styled("·", currentTheme.dim)
+        let folderStyled = styled(folder.padding(toLength: 8, withPad: " ", startingAt: 0), currentTheme.dim)
+        let uuidStyled = styled(String(uuid.prefix(8)), currentTheme.uuid)
+        return "\(flag) \(folderStyled) \(uuidStyled)  \(preview)"
     }
 }
 

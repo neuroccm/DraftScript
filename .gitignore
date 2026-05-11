@@ -31,3 +31,6 @@ notes/
 data/
 backups/
 *.txt
+
+# Session logs
+session-*.md
