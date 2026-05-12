@@ -187,22 +187,18 @@ struct DraftsBridge {
             end if
         end firstChars
 
-        set epoch to current date
-        set year of epoch to 1970
-        set month of epoch to January
-        set day of epoch to 1
-        set time of epoch to 0
-
         tell application "Drafts"
-            set myDrafts to every draft
+            set myDrafts to drafts of current workspace
             set out to ""
+            set counter to 0
             repeat with d in myDrafts
+                if counter ≥ \(limit) then exit repeat
                 set draftUUID to id of d
                 set draftFlagged to flagged of d as text
                 set draftFolder to folder of d as text
-                set modifiedSeconds to (modification date of d) - epoch
                 set preview to my firstChars(title of d, 120)
-                set out to out & draftUUID & "\\t" & draftFlagged & "\\t" & draftFolder & "\\t" & modifiedSeconds & "\\t" & preview & "\\n"
+                set out to out & draftUUID & "\\t" & draftFlagged & "\\t" & draftFolder & "\\t" & preview & "\\n"
+                set counter to counter + 1
             end repeat
             return out
         end tell
@@ -211,24 +207,17 @@ struct DraftsBridge {
         let result = try exec(script: script)
         guard !result.isEmpty else { return [] }
 
-        return result.split(separator: "\n")
-            .compactMap { line -> (draft: Draft, modifiedSeconds: Double)? in
-                let parts = line.split(separator: "\t", maxSplits: 4, omittingEmptySubsequences: false).map(String.init)
-                guard parts.count >= 4 else { return nil }
-                return (
-                    draft: Draft(
-                        uuid: parts[0],
-                        flagged: parts[1] == "true",
-                        folder: parts[2],
-                        preview: parts.count > 4 ? parts[4] : "",
-                        content: nil
-                    ),
-                    modifiedSeconds: Double(parts[3]) ?? 0
-                )
-            }
-            .sorted { lhs, rhs in lhs.modifiedSeconds > rhs.modifiedSeconds }
-            .prefix(limit)
-            .map(\.draft)
+        return result.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: "\t", maxSplits: 3, omittingEmptySubsequences: false).map(String.init)
+            guard parts.count >= 3 else { return nil }
+            return Draft(
+                uuid: parts[0],
+                flagged: parts[1] == "true",
+                folder: parts[2],
+                preview: parts.count > 3 ? parts[3] : "",
+                content: nil
+            )
+        }
     }
 
     static func getDraft(uuid: String) throws -> Draft {
