@@ -337,7 +337,7 @@ struct LineEditor {
     var tabIdx: Int = 0
 
     static let commands = [
-        "new", "list", "search", "aisearch", "get",
+        "new", "edit", "list", "search", "aisearch", "get",
         "current", "action", "tag", "flag", "folder",
         "model", "theme", "help", "exit"
     ]
@@ -537,6 +537,145 @@ func runCompose(options: [String: String], flags: Set<String>) {
     }
 }
 
+func runEdit(uuid: String, existingContent: String) {
+    var lines = existingContent.components(separatedBy: "\n")
+    if lines.isEmpty { lines = [""] }
+    var row = lines.count - 1
+    var col = lines[row].count
+    var offset = 0
+
+    func visibleLine(_ line: String, width: Int) -> String {
+        let maxWidth = max(width - 1, 1)
+        return line.count > maxWidth ? String(line.prefix(maxWidth)) : line
+    }
+
+    func render() {
+        let (width, height) = terminalSize()
+        let visible = max(height - 5, 3)
+        if row < offset { offset = row }
+        if row >= offset + visible { offset = row - visible + 1 }
+
+        writeStr("\u{1B}[2J\u{1B}[H")
+        writeLine(styled("── Editing \(uuid) (/end save, /cancel abort) ──", currentTheme.header))
+
+        let end = min(offset + visible, lines.count)
+        for i in offset..<end {
+            let prefix = i == row ? styled("› ", currentTheme.cursor) : "  "
+            writeLine(prefix + visibleLine(lines[i], width: width - 2))
+        }
+
+        for _ in 0..<max(0, visible - (end - offset)) {
+            writeLine("~")
+        }
+
+        writeLine(styled("Arrows move. Enter inserts line. Type /end on its own line to save.", currentTheme.dim))
+
+        let screenRow = 2 + (row - offset)
+        let screenCol = min(col + 3, max(width, 1))
+        writeStr("\u{1B}[\(screenRow);\(screenCol)H")
+    }
+
+    func save() {
+        do {
+            let content = lines.joined(separator: "\n")
+            let savedUUID = try DraftsBridge.updateDraft(uuid: uuid, content: content)
+            writeStr("\u{1B}[2J\u{1B}[H")
+            writeLine("\(styled("Updated:", currentTheme.success)) \(styled(savedUUID, currentTheme.uuid))")
+        } catch {
+            writeStr("\u{1B}[2J\u{1B}[H")
+            writeLine("\(styled("Error:", currentTheme.error)) \(error)")
+        }
+    }
+
+    render()
+    while true {
+        let key = readKey()
+        switch key {
+        case .char(let c):
+            lines[row].insert(c, at: lines[row].index(lines[row].startIndex, offsetBy: col))
+            col += 1
+            render()
+        case .enter:
+            let trimmed = lines[row].trimmingCharacters(in: .whitespaces)
+            if trimmed == "/end" {
+                lines.remove(at: row)
+                if lines.isEmpty { lines = [""] }
+                save()
+                return
+            }
+            if trimmed == "/cancel" {
+                writeStr("\u{1B}[2J\u{1B}[H")
+                writeLine(styled("Cancelled.", currentTheme.dim))
+                return
+            }
+
+            let line = lines[row]
+            let splitIndex = line.index(line.startIndex, offsetBy: col)
+            let before = String(line[..<splitIndex])
+            let after = String(line[splitIndex...])
+            lines[row] = before
+            lines.insert(after, at: row + 1)
+            row += 1
+            col = 0
+            render()
+        case .backspace:
+            if col > 0 {
+                let removeIndex = lines[row].index(lines[row].startIndex, offsetBy: col - 1)
+                lines[row].remove(at: removeIndex)
+                col -= 1
+            } else if row > 0 {
+                let previousCount = lines[row - 1].count
+                lines[row - 1] += lines[row]
+                lines.remove(at: row)
+                row -= 1
+                col = previousCount
+            }
+            render()
+        case .delete:
+            if col < lines[row].count {
+                let removeIndex = lines[row].index(lines[row].startIndex, offsetBy: col)
+                lines[row].remove(at: removeIndex)
+            } else if row + 1 < lines.count {
+                lines[row] += lines[row + 1]
+                lines.remove(at: row + 1)
+            }
+            render()
+        case .left:
+            if col > 0 {
+                col -= 1
+            } else if row > 0 {
+                row -= 1
+                col = lines[row].count
+            }
+            render()
+        case .right:
+            if col < lines[row].count {
+                col += 1
+            } else if row + 1 < lines.count {
+                row += 1
+                col = 0
+            }
+            render()
+        case .up:
+            guard row > 0 else { break }
+            row -= 1
+            col = min(col, lines[row].count)
+            render()
+        case .down:
+            guard row + 1 < lines.count else { break }
+            row += 1
+            col = min(col, lines[row].count)
+            render()
+        case .ctrlC, .ctrlD, .escape:
+            writeStr("\u{1B}[2J\u{1B}[H")
+            writeLine(styled("Cancelled.", currentTheme.dim))
+            return
+        default:
+            break
+        }
+    }
+}
+
 // MARK: - List navigator + view mode
 
 func viewContent(_ content: String, label: String) {
@@ -639,12 +778,71 @@ func navigateList(drafts: [(uuid: String, content: String)], label: String) {
     }
 }
 
+func navigateEditList(drafts: [Draft]) {
+    let (width, height) = terminalSize()
+    let visible = max(height - 4, 3)
+    var idx = 0
+    var offset = 0
+    var prevCount = 0
+
+    func render() {
+        let end = min(offset + visible, drafts.count)
+        let count = end - offset + 1
+        if prevCount > 0 {
+            writeStr("\u{1B}[\(prevCount)A")
+        }
+        writeStr("\r\u{1B}[K")
+        writeLine(styled("── Edit recent drafts (↑/↓ select, Enter edit, q back) ──", currentTheme.header))
+        for i in offset..<end {
+            writeStr("\r\u{1B}[K")
+            let d = drafts[i]
+            let cursor = i == idx ? styled("→ ", currentTheme.cursor) : "  "
+            let uuid = styled(d.uuid, currentTheme.uuid)
+            let previewWidth = max(width - 42, 10)
+            let preview = d.preview.count > previewWidth ? String(d.preview.prefix(previewWidth)) : d.preview
+            writeLine("\(cursor)\(uuid)  \(preview)")
+        }
+        prevCount = count
+    }
+
+    render()
+    while true {
+        let key = readKey()
+        switch key {
+        case .up:
+            guard idx > 0 else { break }
+            idx -= 1
+            if idx < offset { offset = idx }
+            render()
+        case .down:
+            guard idx < drafts.count - 1 else { break }
+            idx += 1
+            if idx >= offset + visible { offset = idx - visible + 1 }
+            render()
+        case .enter:
+            let d = drafts[idx]
+            do {
+                let full = try DraftsBridge.getDraft(uuid: d.uuid)
+                runEdit(uuid: full.uuid, existingContent: full.content ?? full.preview)
+            } catch {
+                writeLine("\(styled("Error:", currentTheme.error)) \(error)")
+            }
+            return
+        case .escape, .char("q"):
+            return
+        default:
+            break
+        }
+    }
+}
+
 // MARK: - REPL
 
 func showHelp() {
     let a = currentTheme.accent
     writeLine(styled("Commands:", currentTheme.header))
     writeLine("  \(styled("/new", a)) [--tags <t>] [--flag]     Compose and create a draft")
+    writeLine("  \(styled("/edit", a))                         Select one of the 10 most recently modified drafts and edit it")
     writeLine("  \(styled("/list", a)) [--tag <t>] [--folder <f>] [--flagged] [--search <q>] [--limit <n>]")
     writeLine("  \(styled("/search", a)) <q> [--folder <f>] [--limit <n>]")
     writeLine("  \(styled("/aisearch", a)) <q> [--limit <n>]")
@@ -700,6 +898,18 @@ func runREPL() throws {
 
         case "new":
             runCompose(options: cmd.options, flags: cmd.flags)
+
+        case "edit":
+            do {
+                let drafts = try DraftsBridge.listRecentDrafts(limit: 10)
+                if drafts.isEmpty {
+                    writeLine(styled("No drafts found.", currentTheme.dim))
+                } else {
+                    navigateEditList(drafts: drafts)
+                }
+            } catch {
+                writeLine("\(styled("Error:", currentTheme.error)) \(error)")
+            }
 
         case "list":
             do {

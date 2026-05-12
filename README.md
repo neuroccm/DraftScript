@@ -92,6 +92,7 @@ Querying LLM (gemma4:e2b)...
 | Command | Description |
 |---------|-------------|
 | `/new [--tags <t>] [--flag]` | Enter compose mode, type/paste content, end with `/end` |
+| `/edit` | Select one of the 10 most recently modified drafts, edit it, and save with `/end` |
 | `/list [--tag <t>] [--folder <f>] [--flagged] [--search <q>] [--limit <n>]` | List drafts |
 | `/search <q> [--folder <f>] [--limit <n>]` | Search drafts, results are selectable |
 | `/aisearch <q> [--limit <n>]` | AI-powered semantic search, browse results |
@@ -116,6 +117,16 @@ Created: A2A1F93B-25D4-416B-9B5F-3D192DBE6AA4
 ```
 
 Options like `--tags work,urgent --flag` can be added on the `/new` line.
+
+### Editing a Draft
+
+```
+> /edit
+── Edit recent drafts (↑/↓ select, Enter edit, q back) ──
+→ A2A1F93B-25D4-416B-9B5F-3D192DBE6AA4  First line of the draft
+```
+
+Select a recently modified draft with the arrow keys and press Enter. The draft opens in an editable buffer. Use arrow keys to move, Enter to insert lines, and type `/end` on its own line to overwrite the draft and return to the REPL. Use `/cancel`, Escape, or Ctrl-C to abort.
 
 ### Navigating Results
 

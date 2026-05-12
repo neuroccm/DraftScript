@@ -177,6 +177,60 @@ struct DraftsBridge {
         }
     }
 
+    static func listRecentDrafts(limit: Int = 10) throws -> [Draft] {
+        let script = """
+        on firstChars(txt, n)
+            if length of txt > n then
+                return text 1 thru n of txt
+            else
+                return txt
+            end if
+        end firstChars
+
+        set epoch to current date
+        set year of epoch to 1970
+        set month of epoch to January
+        set day of epoch to 1
+        set time of epoch to 0
+
+        tell application "Drafts"
+            set myDrafts to every draft
+            set out to ""
+            repeat with d in myDrafts
+                set draftUUID to id of d
+                set draftFlagged to flagged of d as text
+                set draftFolder to folder of d as text
+                set modifiedSeconds to (modification date of d) - epoch
+                set preview to my firstChars(title of d, 120)
+                set out to out & draftUUID & "\\t" & draftFlagged & "\\t" & draftFolder & "\\t" & modifiedSeconds & "\\t" & preview & "\\n"
+            end repeat
+            return out
+        end tell
+        """
+
+        let result = try exec(script: script)
+        guard !result.isEmpty else { return [] }
+
+        return result.split(separator: "\n")
+            .compactMap { line -> (draft: Draft, modifiedSeconds: Double)? in
+                let parts = line.split(separator: "\t", maxSplits: 4, omittingEmptySubsequences: false).map(String.init)
+                guard parts.count >= 4 else { return nil }
+                return (
+                    draft: Draft(
+                        uuid: parts[0],
+                        flagged: parts[1] == "true",
+                        folder: parts[2],
+                        preview: parts.count > 4 ? parts[4] : "",
+                        content: nil
+                    ),
+                    modifiedSeconds: Double(parts[3]) ?? 0
+                )
+            }
+            .sorted { lhs, rhs in lhs.modifiedSeconds > rhs.modifiedSeconds }
+            .prefix(limit)
+            .map(\.draft)
+    }
+
     static func getDraft(uuid: String) throws -> Draft {
         let script = """
         tell application "Drafts"
@@ -195,6 +249,19 @@ struct DraftsBridge {
             preview: parts.count > 3 ? String(parts[3].prefix(80)) : "",
             content: parts.count > 3 ? parts[3] : nil
         )
+    }
+
+    @discardableResult
+    static func updateDraft(uuid: String, content: String) throws -> String {
+        let script = """
+        tell application "Drafts"
+            set d to draft id "\(esc(uuid))"
+            set content of d to "\(esc(content))"
+            return id of d
+        end tell
+        """
+
+        return try exec(script: script)
     }
 
     static func getCurrentDraft() throws -> Draft {
