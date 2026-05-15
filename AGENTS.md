@@ -144,6 +144,16 @@ swift build -c release                    # Release build
 cp .build/release/draftscript ~/.local/bin/  # Install
 ```
 
+## Version and Release Policy
+
+Whenever the app version/build is bumped:
+- Update `Sources/draftscript/CLI.swift` so `draftscript --version` reports the new version
+- Build and verify the release binary with `.build/release/draftscript --version`
+- Commit and push the version bump
+- Create or update the matching GitHub release/tag so the public GitHub Releases page reflects the new version
+- Upload `.build/release/draftscript` as the `draftscript-macos` release asset
+- Update this AGENTS.md release metadata after the GitHub release exists, then commit and push that metadata update
+
 Release workflow example for `v1.2.0`:
 
 ```bash
