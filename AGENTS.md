@@ -4,10 +4,10 @@
 
 DraftScript is a Swift CLI tool that interfaces with the [Drafts](https://getdrafts.com) macOS app via AppleScript. It has two modes:
 
-1. **Interactive REPL** (default) — `draftscript` enters a terminal UI with prompt, tab completion, history, navigable lists, multi-line compose mode, and `/edit` draft editing
+1. **Interactive REPL** (default) — `draftscript` enters a terminal UI with prompt, tab completion, history, navigable lists, multi-line compose mode, `/edit` draft editing, `/recent` draft browsing, and `/todo` pinned todo-list editing
 2. **One-shot CLI** — `draftscript create "foo"`, `draftscript list`, etc. for scripting
 
-Current released version: **1.1.2** (`v1.1.2` GitHub release, commit `5ac4dce`). Release asset is the macOS `draftscript` binary built from `.build/release/draftscript`.
+Current build version: **1.2.0**. Latest GitHub release: **1.1.2** (`v1.1.2`, commit `5ac4dce`). Release asset is the macOS `draftscript` binary built from `.build/release/draftscript`.
 
 ## File Structure
 
@@ -47,7 +47,7 @@ Other:
 - Character insertion via `.char(c)` keys
 - Backspace support
 - History: arrow up/down cycles through previously submitted lines
-- Tab completion: matches against `/new`, `/edit`, `/list`, `/search`, `/aisearch`, `/get`, `/current`, `/action`, `/tag`, `/flag`, `/folder`, `/model`, `/theme`, `/help`, `/exit`
+- Tab completion: matches against `/new`, `/edit`, `/recent`, `/todo`, `/list`, `/search`, `/aisearch`, `/get`, `/current`, `/action`, `/tag`, `/flag`, `/folder`, `/model`, `/theme`, `/help`, `/exit`
 - Ctrl+C/D returns `/exit` to quit REPL
 - Uses `\r\u{1B}[K` (carriage return + clear line) to redraw prompt on each keystroke
 
@@ -70,6 +70,20 @@ Other:
 - In edit mode, arrow keys move the cursor, Enter inserts lines, Backspace/Delete edit text, `/end` on its own line overwrites the existing draft via `DraftsBridge.updateDraft(uuid:content:)`
 - `/cancel`, Escape, Ctrl-C, or Ctrl-D abort editing and return to the REPL without saving
 
+**Recent mode** (`/recent`):
+- `/recent` calls `DraftsBridge.listRecentDrafts(limit:)` with a default limit of 10 and shows a browsable list of recent current-workspace drafts
+- Enter fetches full content with `DraftsBridge.getDraft(uuid:)` and opens the read-only viewer
+- Pressing `/` while viewing a draft opened from `/recent` opens that draft in `runEdit()`
+- `/recent --edit` reuses `navigateEditList()` so selecting a draft opens the same editor flow as `/edit`
+- `/recent --limit <n>` adjusts the bounded query count; invalid limits fall back to 10
+
+**Todo mode** (`/todo`, `runTodo()`):
+- Opens a pinned Drafts draft as a line-by-line todo list; default ID/prefix is `399FDE34`
+- Current todo draft selection is persisted in `~/.draftscript_todo_uuid`
+- `/todo --change <uuid>` validates the new Drafts ID/prefix, resolves it to the full UUID when possible, and saves it for future sessions
+- `/todo --change` with no value prompts for the new UUID in raw mode
+- Up/down moves selection, Space/left/right toggles Markdown checkbox state, Enter edits the selected line, and edits/toggles save immediately via `DraftsBridge.updateDraft(uuid:content:)`
+
 **List navigator** (`navigateList()`):
 - Shows items with `→` cursor for selected item
 - Arrow up/down to move selection, auto-scrolling when cursor moves past visible window
@@ -79,14 +93,16 @@ Other:
 
 **View mode** (`viewContent()`):
 - Shows full draft content with scroll offset
+- Uses full-screen redraws so returning from one draft and opening another starts from a clean terminal state
 - Arrow up/down to scroll, Escape to go back
+- When opened from `/recent`, `/` enters edit mode for the viewed draft
 - Truncates lines to terminal width
 
 **REPL loop** (`runREPL()`):
 - Enables raw mode on entry, disables on exit (defer)
 - Creates `LineEditor`, loops reading lines
 - Dispatches parsed commands to DraftsBridge/LLMService methods
-- Dispatches interactive slash commands including `/new`, `/edit`, `/list`, `/search`, `/aisearch`, `/get`, `/current`, `/action`, `/tag`, `/flag`, `/folder`, `/model`, `/theme`, `/help`, `/exit`
+- Dispatches interactive slash commands including `/new`, `/edit`, `/recent`, `/todo`, `/list`, `/search`, `/aisearch`, `/get`, `/current`, `/action`, `/tag`, `/flag`, `/folder`, `/model`, `/theme`, `/help`, `/exit`
 
 ### Key Design Decisions
 
@@ -94,7 +110,7 @@ Other:
 2. **Default subcommand** — `InteractiveREPL` is the default via `CommandConfiguration.defaultSubcommand`. One-shot commands still work.
 3. **Output in raw mode** — with `OPOST` off, all output uses `\r\n` manually via `writeStr`/`writeLine`.
 4. **Content on demand** — list/edit navigators fetch full draft content via `getDraft(uuid:)` only when Enter is pressed, not in advance.
-5. **Recent edit listing** — `/edit` intentionally uses `drafts of current workspace` with a hard limit of 10. Do not reintroduce an `every draft` modification-date scan unless it is proven fast on large Drafts libraries.
+5. **Recent draft listing** — `/edit` and `/recent` intentionally use `drafts of current workspace` with a bounded limit. Do not reintroduce an `every draft` modification-date scan unless it is proven fast on large Drafts libraries.
 
 ## Known Limitations
 
@@ -128,12 +144,12 @@ swift build -c release                    # Release build
 cp .build/release/draftscript ~/.local/bin/  # Install
 ```
 
-Release workflow used for `v1.1.2`:
+Release workflow example for `v1.2.0`:
 
 ```bash
 swift build && swift build -c release
 cp .build/release/draftscript ~/.local/bin/draftscript
-gh release create v1.1.2 --target main --title "DraftScript 1.1.2" --notes "..." ".build/release/draftscript#draftscript-macos"
+gh release create v1.2.0 --target main --title "DraftScript 1.2.0" --notes "..." ".build/release/draftscript#draftscript-macos"
 ```
 
 Verify installed version with:
@@ -149,5 +165,5 @@ No test suite exists yet. The tool interacts with the Drafts AppleScript API whi
 Manual verification performed for the latest release:
 - `swift build`
 - `swift build -c release`
-- `~/.local/bin/draftscript --version` returns `1.1.2`
+- `~/.local/bin/draftscript --version` returns `1.2.0`
 - Direct `osascript` check of `drafts of current workspace` with `counter ≥ 10` returns 10 draft rows promptly

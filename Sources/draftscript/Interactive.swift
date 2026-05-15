@@ -70,6 +70,23 @@ func styled(_ text: String, _ style: Style) -> String {
 }
 
 var ollamaUp: Bool = false
+let defaultTodoDraftUUID = "399FDE34"
+let todoDraftConfigFile = ".draftscript_todo_uuid"
+
+func todoDraftConfigURL() -> URL {
+    FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(todoDraftConfigFile)
+}
+
+func currentTodoDraftUUID() -> String {
+    let url = todoDraftConfigURL()
+    guard let value = try? String(contentsOf: url, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+          !value.isEmpty else { return defaultTodoDraftUUID }
+    return value
+}
+
+func saveTodoDraftUUID(_ uuid: String) throws {
+    try (uuid + "\n").write(to: todoDraftConfigURL(), atomically: true, encoding: .utf8)
+}
 
 func promptText() -> String {
     let dot = ollamaUp ? "\u{25CF}" : "\u{25CB}"
@@ -337,7 +354,7 @@ struct LineEditor {
     var tabIdx: Int = 0
 
     static let commands = [
-        "new", "edit", "list", "search", "aisearch", "get",
+        "new", "edit", "recent", "todo", "list", "search", "aisearch", "get",
         "current", "action", "tag", "flag", "folder",
         "model", "theme", "help", "exit"
     ]
@@ -676,31 +693,251 @@ func runEdit(uuid: String, existingContent: String) {
     }
 }
 
-// MARK: - List navigator + view mode
+// MARK: - Todo mode
 
-func viewContent(_ content: String, label: String) {
-    let (width, height) = terminalSize()
-    let lines = content.components(separatedBy: "\n").map { line -> String in
-        if line.count > width - 2 { return String(line.prefix(width - 2)) }
-        return line
+func todoCheckboxState(_ line: String) -> Bool? {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    if trimmed == "- [x]" || trimmed.hasPrefix("- [x] ") || trimmed == "- [X]" || trimmed.hasPrefix("- [X] ") {
+        return true
     }
-    let maxOffset = max(0, lines.count - (height - 3))
-    var offset = 0
-    var prevCount = 0
+    if trimmed == "- [ ]" || trimmed.hasPrefix("- [ ] ") {
+        return false
+    }
+    return nil
+}
+
+func todoLineBody(_ line: String) -> String {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    guard todoCheckboxState(trimmed) != nil else { return trimmed }
+    var body = String(trimmed.dropFirst(5))
+    if body.hasPrefix(" ") { body.removeFirst() }
+    return body
+}
+
+func todoLeadingWhitespace(_ line: String) -> String {
+    String(line.prefix { $0 == " " || $0 == "\t" })
+}
+
+func toggledTodoLine(_ line: String) -> String {
+    let checked = todoCheckboxState(line) ?? false
+    let body = todoLineBody(line)
+    return "\(todoLeadingWhitespace(line))- [\(!checked ? "x" : " ")] \(body)"
+}
+
+func editTodoLine(_ initial: String) -> String? {
+    var chars = Array(initial)
+    var col = chars.count
 
     func render() {
-        let end = min(offset + (height - 3), lines.count)
-        let count = end - offset + 1
-        if prevCount > 0 {
-            writeStr("\u{1B}[\(prevCount)A")
+        let (width, _) = terminalSize()
+        let value = String(chars)
+        let visible = value.count > max(width - 8, 1) ? String(value.prefix(max(width - 8, 1))) : value
+        writeStr("\u{1B}[2J\u{1B}[H")
+        writeLine(styled("── Edit todo line (Enter save, Esc cancel) ──", currentTheme.header))
+        writeLine("Edit: \(visible)")
+        writeLine(styled("Use ←/→, Backspace, Delete. Keep '- [ ]' or '- [x]' for checkbox state.", currentTheme.dim))
+        let screenCol = min(7 + col, max(width, 1))
+        writeStr("\u{1B}[2;\(screenCol)H")
+    }
+
+    render()
+    while true {
+        switch readKey() {
+        case .char(let c):
+            chars.insert(c, at: col)
+            col += 1
+            render()
+        case .backspace:
+            if col > 0 {
+                chars.remove(at: col - 1)
+                col -= 1
+                render()
+            }
+        case .delete:
+            if col < chars.count {
+                chars.remove(at: col)
+                render()
+            }
+        case .left:
+            if col > 0 { col -= 1; render() }
+        case .right:
+            if col < chars.count { col += 1; render() }
+        case .enter:
+            return String(chars)
+        case .escape, .ctrlC, .ctrlD:
+            return nil
+        default:
+            break
         }
-        writeStr("\r\u{1B}[K")
-        writeLine(styled("\u{2500}\u{2500} \(label) (\u{2191}/\u{2193} scroll, Esc back) \u{2500}\u{2500}", currentTheme.header))
+    }
+}
+
+func readTodoUUIDInput(current: String) -> String? {
+    var buffer = ""
+    let prompt = "New todo draft UUID (current \(current), Esc cancel): "
+
+    func render() {
+        clearLine()
+        writeStr(prompt + buffer)
+    }
+
+    render()
+    while true {
+        switch readKey() {
+        case .char(let c):
+            buffer.append(c)
+            render()
+        case .backspace:
+            if !buffer.isEmpty {
+                buffer.removeLast()
+                render()
+            }
+        case .enter:
+            writeLine()
+            let value = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        case .escape, .ctrlC, .ctrlD:
+            writeLine()
+            return nil
+        default:
+            break
+        }
+    }
+}
+
+func resolveTodoDraft(uuidOrPrefix: String) throws -> Draft {
+    do {
+        return try DraftsBridge.getDraft(uuid: uuidOrPrefix)
+    } catch {
+        if let fullUUID = try DraftsBridge.findDraftUUID(prefix: uuidOrPrefix) {
+            return try DraftsBridge.getDraft(uuid: fullUUID)
+        }
+        throw error
+    }
+}
+
+func changeTodoDraftUUID(to requestedUUID: String?) {
+    let current = currentTodoDraftUUID()
+    let uuid = requestedUUID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? readTodoUUIDInput(current: current)
+    guard let uuid, !uuid.isEmpty else {
+        writeLine(styled("Todo draft unchanged.", currentTheme.dim))
+        return
+    }
+
+    do {
+        let draft = try resolveTodoDraft(uuidOrPrefix: uuid)
+        try saveTodoDraftUUID(draft.uuid)
+        writeLine("\(styled("Todo draft changed:", currentTheme.success)) \(styled(draft.uuid, currentTheme.uuid))")
+        writeLine(styled("Saved in ~/\(todoDraftConfigFile)", currentTheme.dim))
+    } catch {
+        writeLine("\(styled("Error:", currentTheme.error)) Unable to use todo draft \(uuid): \(error)")
+    }
+}
+
+func runTodo() {
+    do {
+        let todoDraftUUID = currentTodoDraftUUID()
+        let draft = try resolveTodoDraft(uuidOrPrefix: todoDraftUUID)
+        var lines = (draft.content ?? "").components(separatedBy: "\n")
+        if lines.isEmpty { lines = [""] }
+        var idx = 0
+        var offset = 0
+        var status = "Todo draft: \(draft.uuid)"
+
+        func save() {
+            do {
+                _ = try DraftsBridge.updateDraft(uuid: draft.uuid, content: lines.joined(separator: "\n"))
+                status = "Saved \(draft.uuid)"
+            } catch {
+                status = "Error saving: \(error)"
+            }
+        }
+
+        func visibleLine(_ line: String, width: Int) -> String {
+            let maxWidth = max(width - 4, 1)
+            return line.count > maxWidth ? String(line.prefix(maxWidth)) : line
+        }
+
+        func render() {
+            let (width, height) = terminalSize()
+            let visible = max(height - 5, 3)
+            if idx < offset { offset = idx }
+            if idx >= offset + visible { offset = idx - visible + 1 }
+
+            writeStr("\u{1B}[2J\u{1B}[H")
+            writeLine(styled("── Todo (↑/↓ move, Space/←/→ toggle, Enter edit, q back) ──", currentTheme.header))
+
+            let end = min(offset + visible, lines.count)
+            for i in offset..<end {
+                let cursor = i == idx ? styled("→ ", currentTheme.cursor) : "  "
+                writeLine(cursor + visibleLine(lines[i], width: width - 2))
+            }
+
+            for _ in 0..<max(0, visible - (end - offset)) {
+                writeLine("~")
+            }
+
+            let style = status.hasPrefix("Error") ? currentTheme.error : currentTheme.dim
+            writeLine(styled(status, style))
+        }
+
+        render()
+        while true {
+            switch readKey() {
+            case .up:
+                if idx > 0 { idx -= 1; render() }
+            case .down:
+                if idx + 1 < lines.count { idx += 1; render() }
+            case .char(" "), .left, .right:
+                lines[idx] = toggledTodoLine(lines[idx])
+                save()
+                render()
+            case .enter:
+                if let edited = editTodoLine(lines[idx]) {
+                    lines[idx] = edited
+                    save()
+                } else {
+                    status = "Edit cancelled"
+                }
+                render()
+            case .escape, .char("q"), .ctrlC, .ctrlD:
+                writeStr("\u{1B}[2J\u{1B}[H")
+                return
+            default:
+                break
+            }
+        }
+    } catch {
+        writeLine("\(styled("Error:", currentTheme.error)) Unable to open todo draft \(currentTodoDraftUUID()): \(error)")
+        writeLine(styled("Use /todo --change <uuid> to choose a different todo draft.", currentTheme.dim))
+    }
+}
+
+// MARK: - List navigator + view mode
+
+func viewContent(_ content: String, label: String, canEdit: Bool = false) -> Bool {
+    var offset = 0
+
+    func render() {
+        let (width, height) = terminalSize()
+        let visibleHeight = max(height - 3, 1)
+        let lines = content.components(separatedBy: "\n").map { line -> String in
+            let maxWidth = max(width - 2, 1)
+            return line.count > maxWidth ? String(line.prefix(maxWidth)) : line
+        }
+        let maxOffset = max(0, lines.count - visibleHeight)
+        if offset > maxOffset { offset = maxOffset }
+        let end = min(offset + visibleHeight, lines.count)
+        let help = canEdit ? "\u{2191}/\u{2193} scroll, / edit, Esc back" : "\u{2191}/\u{2193} scroll, Esc back"
+
+        writeStr("\u{1B}[2J\u{1B}[H")
+        writeLine(styled("\u{2500}\u{2500} \(label) (\(help)) \u{2500}\u{2500}", currentTheme.header))
         for i in offset..<end {
-            writeStr("\r\u{1B}[K")
             writeLine(" " + lines[i])
         }
-        prevCount = count
+        for _ in 0..<max(0, visibleHeight - (end - offset)) {
+            writeLine("~")
+        }
     }
 
     render()
@@ -710,41 +947,46 @@ func viewContent(_ content: String, label: String) {
         case .up where offset > 0:
             offset -= 1
             render()
-        case .down where offset < maxOffset:
+        case .down:
+            let (_, height) = terminalSize()
+            let maxOffset = max(0, content.components(separatedBy: "\n").count - max(height - 3, 1))
+            guard offset < maxOffset else { break }
             offset += 1
             render()
+        case .char("/") where canEdit:
+            return true
         case .escape, .char("q"):
-            return
+            return false
         default:
             break
         }
     }
 }
 
-func navigateList(drafts: [(uuid: String, content: String)], label: String) {
-    let (width, height) = terminalSize()
-    let visible = max(height - 4, 3)
+func navigateList(drafts: [(uuid: String, content: String)], label: String, allowInlineEdit: Bool = false) {
     var idx = 0
     var offset = 0
-    var prevCount = 0
 
     func render() {
+        let (width, height) = terminalSize()
+        let visible = max(height - 4, 3)
+        if idx < offset { offset = idx }
+        if idx >= offset + visible { offset = idx - visible + 1 }
         let end = min(offset + visible, drafts.count)
-        let count = end - offset + 1
-        if prevCount > 0 {
-            writeStr("\u{1B}[\(prevCount)A")
-        }
-        writeStr("\r\u{1B}[K")
+
+        writeStr("\u{1B}[2J\u{1B}[H")
         writeLine(styled("\u{2500}\u{2500} \(label) (\u{2191}/\u{2193} select, Enter view, q back) \u{2500}\u{2500}", currentTheme.header))
         for i in offset..<end {
-            writeStr("\r\u{1B}[K")
             let d = drafts[i]
-            let preview = d.content.prefix(width - 10).replacingOccurrences(of: "\n", with: " ")
+            let previewWidth = max(width - 10, 1)
+            let preview = d.content.prefix(previewWidth).replacingOccurrences(of: "\n", with: " ")
             let cursor = i == idx ? styled("\u{2192} ", currentTheme.cursor) : "  "
             let uuid = styled(String(d.uuid.prefix(8)), currentTheme.uuid)
             writeLine("\(cursor)\(uuid)  \(preview)")
         }
-        prevCount = count
+        for _ in 0..<max(0, visible - (end - offset)) {
+            writeLine("~")
+        }
     }
 
     render()
@@ -759,15 +1001,20 @@ func navigateList(drafts: [(uuid: String, content: String)], label: String) {
         case .down:
             guard idx < drafts.count - 1 else { break }
             idx += 1
+            let (_, height) = terminalSize()
+            let visible = max(height - 4, 3)
             if idx >= offset + visible { offset = idx - visible + 1 }
             render()
         case .enter:
             let d = drafts[idx]
             do {
                 let full = try DraftsBridge.getDraft(uuid: d.uuid)
-                viewContent(full.content ?? full.preview, label: full.uuid)
+                let content = full.content ?? full.preview
+                if viewContent(content, label: full.uuid, canEdit: allowInlineEdit) {
+                    runEdit(uuid: full.uuid, existingContent: content)
+                }
             } catch {
-                viewContent(d.content, label: d.uuid)
+                _ = viewContent(d.content, label: d.uuid)
             }
             render()
         case .escape, .char("q"):
@@ -843,6 +1090,8 @@ func showHelp() {
     writeLine(styled("Commands:", currentTheme.header))
     writeLine("  \(styled("/new", a)) [--tags <t>] [--flag]     Compose and create a draft")
     writeLine("  \(styled("/edit", a))                         Select one of the 10 most recently modified drafts and edit it")
+    writeLine("  \(styled("/recent", a)) [--limit <n>] [--edit] Browse recent drafts, or edit with --edit")
+    writeLine("  \(styled("/todo", a)) [--change <uuid>]        Open or change the pinned todo draft")
     writeLine("  \(styled("/list", a)) [--tag <t>] [--folder <f>] [--flagged] [--search <q>] [--limit <n>]")
     writeLine("  \(styled("/search", a)) <q> [--folder <f>] [--limit <n>]")
     writeLine("  \(styled("/aisearch", a)) <q> [--limit <n>]")
@@ -909,6 +1158,32 @@ func runREPL() throws {
                 }
             } catch {
                 writeLine("\(styled("Error:", currentTheme.error)) \(error)")
+            }
+
+        case "recent":
+            do {
+                let parsedLimit = Int(cmd.options["limit"] ?? "")
+                let limit = parsedLimit.map { $0 > 0 ? $0 : 10 } ?? 10
+                let drafts = try DraftsBridge.listRecentDrafts(limit: limit)
+                if drafts.isEmpty {
+                    writeLine(styled("No drafts found.", currentTheme.dim))
+                } else if cmd.flags.contains("edit") {
+                    navigateEditList(drafts: drafts)
+                } else {
+                    let items: [(uuid: String, content: String)] = drafts.map { ($0.uuid, $0.content ?? $0.preview) }
+                    navigateList(drafts: items, label: "Recent drafts", allowInlineEdit: true)
+                }
+            } catch {
+                writeLine("\(styled("Error:", currentTheme.error)) \(error)")
+            }
+
+        case "todo":
+            if let uuid = cmd.options["change"] ?? cmd.args.first, cmd.options["change"] != nil || cmd.flags.contains("change") {
+                changeTodoDraftUUID(to: uuid)
+            } else if cmd.flags.contains("change") {
+                changeTodoDraftUUID(to: nil)
+            } else {
+                runTodo()
             }
 
         case "list":

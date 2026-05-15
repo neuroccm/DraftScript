@@ -240,6 +240,22 @@ struct DraftsBridge {
         )
     }
 
+    static func findDraftUUID(prefix: String) throws -> String? {
+        let script = """
+        tell application "Drafts"
+            set myDrafts to every draft
+            repeat with d in myDrafts
+                set draftUUID to id of d
+                if draftUUID starts with "\(esc(prefix))" then return draftUUID
+            end repeat
+            return ""
+        end tell
+        """
+
+        let result = try exec(script: script)
+        return result.isEmpty ? nil : result
+    }
+
     @discardableResult
     static func updateDraft(uuid: String, content: String) throws -> String {
         let script = """

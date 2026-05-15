@@ -6,6 +6,8 @@ An interactive CLI tool to manage your [Drafts](https://getdrafts.com) macOS app
 
 - **Interactive REPL** — full terminal UI with history, tab completion, and list navigation
 - **Compose mode** — write or paste multi-line drafts, end with `/end` to save
+- **Recent browser** — browse recent current-workspace drafts, or edit them with `/recent --edit`
+- **Todo mode** — navigate and update a pinned Drafts todo draft from the REPL
 - **Create** drafts from arguments, piped stdin, or compose mode
 - **List** drafts with filters (folder, flagged, text search)
 - **Get** a draft's full content by UUID
@@ -93,6 +95,9 @@ Querying LLM (gemma4:e2b)...
 |---------|-------------|
 | `/new [--tags <t>] [--flag]` | Enter compose mode, type/paste content, end with `/end` |
 | `/edit` | Select one of the 10 most recently modified drafts, edit it, and save with `/end` |
+| `/recent [--limit <n>] [--edit]` | Browse recent drafts, or edit with `--edit` |
+| `/todo` | Open the pinned todo draft, move with ↑/↓, toggle with Space/←/→, edit with Enter |
+| `/todo --change [uuid]` | Set a different Drafts draft as the pinned todo list |
 | `/list [--tag <t>] [--folder <f>] [--flagged] [--search <q>] [--limit <n>]` | List drafts |
 | `/search <q> [--folder <f>] [--limit <n>]` | Search drafts, results are selectable |
 | `/aisearch <q> [--limit <n>]` | AI-powered semantic search, browse results |
@@ -127,6 +132,24 @@ Options like `--tags work,urgent --flag` can be added on the `/new` line.
 ```
 
 Select a recently modified draft with the arrow keys and press Enter. The draft opens in an editable buffer. Use arrow keys to move, Enter to insert lines, and type `/end` on its own line to overwrite the draft and return to the REPL. Use `/cancel`, Escape, or Ctrl-C to abort.
+
+### Recent Drafts
+
+`/recent` shows the 10 most recent drafts from the current Drafts workspace. Use the arrow keys to select a draft and press Enter to view its full content. While viewing, press `/` to open that draft in the editor, or Escape to return to the recent list.
+
+Use `/recent --limit 5` to change the count, or `/recent --edit` to open the selected draft in the same editable buffer used by `/edit`.
+
+### Todo List
+
+`/todo` opens a pinned Drafts draft as a line-by-line todo list. The default todo draft is `399FDE34`, but you can change it from the REPL:
+
+```
+> /todo --change 399FDE34-ABCD-1234-ABCD-1234567890AB
+```
+
+You can also run `/todo --change` with no UUID and enter the new Drafts ID when prompted. DraftScript validates the draft, resolves short UUID prefixes to the full UUID when possible, and saves the selection in `~/.draftscript_todo_uuid` for future sessions.
+
+In todo mode, use ↑/↓ to select a line, Space or ←/→ to toggle Markdown checkbox state, and Enter to edit the selected line. Changes are saved back to the same draft immediately.
 
 ### Navigating Results
 
