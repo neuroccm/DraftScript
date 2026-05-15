@@ -7,7 +7,7 @@ DraftScript is a Swift CLI tool that interfaces with the [Drafts](https://getdra
 1. **Interactive REPL** (default) — `draftscript` enters a terminal UI with prompt, tab completion, history, navigable lists, multi-line compose mode, `/edit` draft editing, `/recent` draft browsing, and `/todo` pinned todo-list editing
 2. **One-shot CLI** — `draftscript create "foo"`, `draftscript list`, etc. for scripting
 
-Current build version: **1.2.0**. Latest GitHub release: **1.1.2** (`v1.1.2`, commit `5ac4dce`). Release asset is the macOS `draftscript` binary built from `.build/release/draftscript`.
+Current released version: **1.2.0** (`v1.2.0` GitHub release, commit `f0d105d`). Release asset is the macOS `draftscript` binary built from `.build/release/draftscript`.
 
 ## File Structure
 
