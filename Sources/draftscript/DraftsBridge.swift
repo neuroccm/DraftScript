@@ -134,6 +134,19 @@ struct DraftsBridge {
             end if
         end firstChars
 
+        on getSnippet(txt, query, len)
+            set pos to offset of query in txt
+            if pos > 0 then
+                set startPos to (pos - (len / 2))
+                if startPos < 1 then set startPos to 1
+                set endPos to (pos + (len / 2))
+                if endPos > length of txt then set endPos to length of txt
+                return text startPos thru endPos of txt
+            else
+                return my firstChars(txt, len)
+            end if
+        end getSnippet
+
         on cleanLine(txt)
             set AppleScript's text item delimiters to {return, linefeed, character id 10}
             set parts to text items of txt
@@ -144,6 +157,7 @@ struct DraftsBridge {
         end cleanLine
 
         tell application "Drafts"
+            set searchString to "\(esc(search ?? ""))"
             set myDrafts to every draft\(whereClause)
             set out to ""
             set counter to 0
@@ -153,7 +167,12 @@ struct DraftsBridge {
                 set draftFlagged to flagged of d as text
                 set draftFolder to folder of d as text
                 set rawContent to content of d
-                set preview to my cleanLine(my firstChars(rawContent, 80))
+                if searchString is not "" then
+                    set preview to my getSnippet(rawContent, searchString, 80)
+                else
+                    set preview to my firstChars(rawContent, 80)
+                end if
+                set preview to my cleanLine(preview)
                 set out to out & draftUUID & "\\t" & draftFlagged & "\\t" & draftFolder & "\\t" & preview & "\\n"
                 set counter to counter + 1
             end repeat

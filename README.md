@@ -1,6 +1,6 @@
 # draftscript
 
-An interactive CLI tool to manage your [Drafts](https://getdrafts.com) macOS app drafts from the terminal. Use it as a one-shot command or drop into interactive REPL mode with arrow-key navigation, tab completion, and AI-powered semantic search via [Ollama](https://ollama.com).
+An interactive CLI tool to manage your [Drafts](https://getdrafts.com) macOS app drafts from the terminal. Use it as a one-shot command or drop into interactive REPL mode with arrow-key navigation, tab completion, and AI-powered semantic search via a local LLM — [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai) (including local Gemma models), fully offline.
 
 ## Features
 
@@ -12,7 +12,7 @@ An interactive CLI tool to manage your [Drafts](https://getdrafts.com) macOS app
 - **List** drafts with filters (folder, flagged, text search)
 - **Get** a draft's full content by UUID
 - **Search** drafts by text content with selectable results
-- **AISearch** — semantic search via a local LLM, browse results with arrow keys
+- **AISearch** — semantic search via a local LLM (Ollama or LM Studio), browse results with arrow keys
 - **Run** any Drafts action on a draft
 - **Set tags**, toggle flags, move between folders
 - **View mode** — scroll through full draft content, Esc back to results
@@ -22,7 +22,7 @@ An interactive CLI tool to manage your [Drafts](https://getdrafts.com) macOS app
 - macOS (Apple Silicon or Intel)
 - [Drafts](https://getdrafts.com) app installed (Mac App Store)
 - Swift 5.9+ (included with Xcode or Command Line Tools)
-- [Ollama](https://ollama.com) (optional, for `aisearch`)
+- A local LLM backend (optional, for `aisearch`): [Ollama](https://ollama.com) or [LM Studio](https://lmstudio.ai)
 
 ## Installation
 
@@ -107,6 +107,7 @@ Querying LLM (gemma4:e2b)...
 | `/tag <uuid> <tag> ...` | Set tags on a draft |
 | `/flag <uuid> [--unflag]` | Toggle flagged state |
 | `/folder <uuid> <inbox\|archive\|trash>` | Move a draft to a folder |
+| `/model [<name>] [--provider <ollama\|openai>] [--url <url>]` | Show or change the AI search backend, model, and endpoint |
 | `/help` | Show all commands |
 | `/exit` | Quit the REPL |
 
@@ -322,6 +323,10 @@ draftscript folder A2A1F93B-25D4-416B-9B5F-3D192DBE6AA4 archive
 
 ## AI Search Setup
 
+`aisearch` (and `/aisearch` in the REPL) runs against a local LLM — either **Ollama** or **LM Studio** — entirely on your machine. The tool auto-detects whether the configured backend is running and falls back gracefully if it isn't.
+
+### Option A: Ollama
+
 1. **Install Ollama:**
 
    ```bash
@@ -334,7 +339,7 @@ draftscript folder A2A1F93B-25D4-416B-9B5F-3D192DBE6AA4 archive
    ollama serve
    ```
 
-3. **Pull a Gemma 4 model:**
+3. **Pull a Gemma model:**
 
    ```bash
    ollama pull gemma4
@@ -346,7 +351,41 @@ draftscript folder A2A1F93B-25D4-416B-9B5F-3D192DBE6AA4 archive
    draftscript aisearch "what did I write about design?" --limit 30
    ```
 
-The tool auto-detects whether Ollama is running and falls back gracefully if it isn't.
+Ollama is the default backend — no configuration needed.
+
+### Option B: LM Studio (local Gemma models)
+
+DraftScript also speaks [LM Studio](https://lmstudio.ai)'s OpenAI-compatible local server API, so `aisearch` can run entirely against a local Gemma model (e.g. `gemma-2-9b-it`, `gemma-3-*`) loaded in LM Studio instead of Ollama.
+
+1. Install LM Studio and download a Gemma model from its in-app model search.
+2. Load the model and start LM Studio's local server (Developer / Local Server tab). By default it listens on `http://localhost:1234`.
+3. Point DraftScript at it from the REPL:
+
+   ```
+   > /model gemma-2-9b-it --provider openai --url http://localhost:1234
+   ```
+
+   Use the model name exactly as LM Studio reports it — check the server tab, or `curl http://localhost:1234/v1/models`.
+
+4. Run a search — `aisearch` / `/aisearch` now use LM Studio:
+
+   ```bash
+   draftscript aisearch "what did I write about design?" --limit 30
+   ```
+
+### Configuration
+
+Backend settings persist to `~/.draftscript_config.json`:
+
+```json
+{
+  "provider": "ollama",
+  "url": "http://localhost:11434",
+  "model": "gemma4:e2b"
+}
+```
+
+Change any of these with `/model <name> [--provider ollama|openai] [--url <url>]` in the REPL, or edit the file directly. Settings apply to both the interactive REPL and one-shot `draftscript aisearch`.
 
 ## Pipe Support
 
@@ -389,7 +428,8 @@ DraftScript/
 │       ├── CLI.swift                 # @main entry point, command configuration
 │       ├── Commands.swift            # One-shot subcommand implementations
 │       ├── DraftsBridge.swift        # AppleScript execution layer
-│       ├── LLMService.swift          # Ollama API client for AI search
+│       ├── Config.swift              # Persisted AI backend config (~/.draftscript_config.json)
+│       ├── LLMService.swift          # Ollama / LM Studio (OpenAI-compatible) client for AI search
 │       └── Interactive.swift         # Interactive REPL, list navigator, compose mode
 └── README.md
 ```

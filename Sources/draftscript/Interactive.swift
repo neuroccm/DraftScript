@@ -158,8 +158,26 @@ func aiSearchScore(content: String, terms: [AISearchTerm]) -> Int {
 }
 
 func fetchAISearchDrafts(query: String, limit: Int) throws -> (drafts: [(uuid: String, content: String)], terms: [AISearchTerm], fallback: Bool) {
-    let terms = aiSearchTerms(from: query)
     let candidateLimit = max(1, min(limit, 8))
+
+    // 1. Try direct phrase search first
+    let directMatches = try DraftsBridge.listDrafts(tag: nil, folder: nil, flagged: nil, search: query, limit: candidateLimit)
+    if !directMatches.isEmpty {
+        var drafts: [(uuid: String, content: String)] = []
+        for match in directMatches {
+            if let full = try? DraftsBridge.getDraft(uuid: match.uuid),
+               let content = full.content,
+               !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                drafts.append((uuid: full.uuid, content: content))
+            }
+        }
+        if !drafts.isEmpty {
+            return (drafts, [], false)
+        }
+    }
+
+    // 2. Fallback to term-based search and ranking
+    let terms = aiSearchTerms(from: query)
     var orderedIDs: [String] = []
     var seenIDs = Set<String>()
 
@@ -1111,10 +1129,12 @@ func runREPL() throws {
 
     writeLine(styled("DraftScript interactive. Type /help for commands. /exit or ^C to quit.", currentTheme.header))
 
-    writeStr("Checking Ollama... ")
+    let providerName = currentConfig.provider == "ollama" ? "Ollama" : "LM Studio/OpenAI"
+    writeStr("Checking \(providerName)... ")
     ollamaUp = LLMService.isAvailable
     if ollamaUp {
-        writeLine("\(styled("\u{25CF} \(LLMService.model)", Style(fg: 32)))")
+        let activeModel = LLMService.fetchActiveModel() ?? LLMService.model
+        writeLine("\(styled("\u{25CF} \(activeModel)", Style(fg: 32)))")
     } else {
         writeLine("\(styled("\u{25CB} offline", Style(fg: 31)))")
     }
@@ -1235,7 +1255,10 @@ func runREPL() throws {
             }
             let limit = Int(cmd.options["limit"] ?? "") ?? 50
             guard LLMService.isAvailable else {
-                writeLine(styled("Ollama is not available.", currentTheme.error) + "\r\nInstall from https://ollama.com then pull: ollama pull gemma4")
+                let msg = currentConfig.provider == "ollama" 
+                    ? "\(styled("Ollama is not available.", currentTheme.error))\r\nInstall from https://ollama.com then pull: ollama pull gemma4"
+                    : "\(styled("\(currentConfig.provider) server is not available.", currentTheme.error))\r\nCheck if the server is running at \(currentConfig.url)"
+                writeLine(msg)
                 break
             }
 
@@ -1245,8 +1268,8 @@ func runREPL() throws {
                 let drafts = result.drafts
                 guard !drafts.isEmpty else { writeLine(styled("No drafts to search.", currentTheme.dim)); break }
 
-                if result.terms.isEmpty {
-                    writeLine(styled("No search terms extracted. Using recent drafts.", currentTheme.dim))
+                if result.terms.isEmpty && !result.fallback {
+                    writeLine(styled("\(drafts.count) draft(s) found matching phrase: \"\(query)\".", currentTheme.dim))
                 } else if result.fallback {
                     let terms = result.terms.map(\.text).joined(separator: ", ")
                     writeLine(styled("No direct text matches for: \(terms). Using recent drafts.", currentTheme.dim))
@@ -1364,10 +1387,18 @@ func runREPL() throws {
 
         case "model":
             if let arg = cmd.args.first {
-                LLMService.model = arg
-                writeLine("\(styled("Model set to", currentTheme.success)) \(styled(arg, currentTheme.accent))")
+                currentConfig.model = arg
+                if let p = cmd.options["provider"] { currentConfig.provider = p }
+                if let u = cmd.options["url"] { currentConfig.url = u }
+                do {
+                    try currentConfig.save()
+                    writeLine("\(styled("Updated config:", currentTheme.success)) \(styled(currentConfig.provider, currentTheme.accent)) @ \(styled(currentConfig.url, currentTheme.dim)) - model: \(styled(arg, currentTheme.accent))")
+                } catch {
+                    writeLine("\(styled("Error saving config:", currentTheme.error)) \(error)")
+                }
             } else {
-                writeLine("Current model: \(styled(LLMService.model, currentTheme.accent))")
+                writeLine("Current config: \(styled(currentConfig.provider, currentTheme.accent)) @ \(styled(currentConfig.url, currentTheme.dim)) - model: \(styled(currentConfig.model, currentTheme.accent))")
+                writeLine(styled("Usage: /model <name> [--provider <p>] [--url <u>]", currentTheme.dim))
             }
 
         default:
